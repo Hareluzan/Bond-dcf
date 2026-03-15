@@ -37,17 +37,20 @@ def generate_bond_cashflows(face_value, coupon_rate_pct, ytm_pct, years_to_matur
         total_pv += pv_cf
         macaulay_numerator += pv_cf * (t / payments_per_year)
         
+        # חישוב היתרה לאחר התשלום כדי שהקו בגרף ירד לאפס בסוף
+        remaining_after = remaining_principal - prin_pay
+        
         schedule.append({
             "תקופה (t)": t,
             "שנה מחושבת": round(t / payments_per_year, 2),
-            "יתרת קרן": round(remaining_principal, 2),
+            "יתרת קרן (לאחר תשלום)": round(remaining_after, 2),
             "תשלום ריבית": round(interest_payment, 2),
             "תשלום קרן": round(prin_pay, 2),
             "תזרים נומינלי": round(total_cf, 2),
             "ערך נוכחי (PV)": round(pv_cf, 2)
         })
         
-        remaining_principal -= prin_pay
+        remaining_principal = remaining_after
         
     macd = macaulay_numerator / total_pv if total_pv > 0 else 0
     
@@ -60,7 +63,7 @@ STYLING = """
 <style>
 :root { --gold: #C9A96E; --cream: #F5EDD6; --dark: #0B0E14; --panel: #12161F; --border: rgba(201,169,110,0.35); }
 
-/* כפיית מצב כהה וטקסטים בהירים - מתקן את בעיות ה-Light Mode */
+/* כפיית מצב כהה וטקסטים בהירים */
 .stApp, .stApp > header, [data-testid="stAppViewContainer"] { background-color: var(--dark) !important; color: var(--cream) !important; }
 h1, h2, h3, p, div, label, span { direction: rtl !important; text-align: right !important; color: var(--cream) !important; }
 
@@ -70,7 +73,7 @@ h1, h2, h3, p, div, label, span { direction: rtl !important; text-align: right !
 .metric-value { font-size: 2.2rem; color: var(--gold) !important; font-weight: bold; margin-top: 5px; }
 .fair-value-box { background: rgba(201,169,110,0.1); border: 2px solid var(--gold); padding: 20px; border-radius: 8px; text-align: center !important; }
 
-/* תיקון שדות הקלט ב-Light Mode */
+/* תיקון שדות הקלט */
 div[data-baseweb="select"] > div, div[data-baseweb="input"] > div, div[data-baseweb="base-input"] { background-color: var(--panel) !important; border: 1px solid var(--border) !important; border-radius: 4px !important; }
 div[data-baseweb="select"] *, div[data-baseweb="input"] input { color: var(--cream) !important; -webkit-text-fill-color: var(--cream) !important; }
 [data-baseweb="popover"] > div, [data-baseweb="menu"], div[role="listbox"], ul[role="listbox"] { background-color: var(--panel) !important; }
@@ -81,7 +84,7 @@ li[role="option"] span { color: var(--cream) !important; }
 /* הגנה על אייקוני נגישות */
 .st-visually-hidden, .visually-hidden { display: none !important; }
 
-/* טבלת HTML מותאמת לגלילה RTL ולמסכים קטנים */
+/* טבלת HTML */
 .table-container { overflow-x: auto; width: 100%; direction: rtl; margin-bottom: 15px; }
 .custom-table { width: 100%; border-collapse: collapse; color: var(--cream); }
 .custom-table th { color: var(--gold); border-bottom: 1px solid var(--border); padding: 12px 15px; text-align: right; white-space: nowrap; background: rgba(18,22,31,0.9); }
@@ -133,14 +136,12 @@ def main():
     # --- הצגת תוצאות סופיות ---
     st.subheader("📊 תוצאות התמחור התיאורטי (Fair Value)")
     
-    # הסבר מתמטי קצר
     st.markdown("""
     <div dir='rtl' style='margin-bottom: 10px;'>
     <b>הנוסחה הבסיסית להיוון:</b> אנו לוקחים כל תזרים מזומנים עתידי מתוך לוח הסילוקין, ומחלקים אותו במקדם ההיוון המבוסס על הריבית שהשוק דורש (התשואה לפדיון).
     </div>
     """, unsafe_allow_html=True)
     
-    # הצגת הנוסחה בצורה טבעית ותקינה ב-Streamlit
     st.latex(r"PV = \sum_{t=1}^{n} \frac{CF_t}{(1 + r)^t}")
     
     st.markdown("<br>", unsafe_allow_html=True)
@@ -176,15 +177,61 @@ def main():
         st.markdown(f"<div class='metric-box'><div class='metric-title'>סך תזרים נומינלי (ללא היוון)</div><div class='metric-value'>{total_nominal_return:.2f}</div></div>", unsafe_allow_html=True)
 
     st.divider()
+
+    # --- גרף 1: ציר זמן מרכיבי התזרים (קרן מול ריבית) ---
+    st.subheader("⏱️ ציר זמן: מרכיבי התזרים ויתרת הקרן")
+    st.markdown("גרף זה ממחיש ממה מורכב כל תשלום (קרן וריבית) לאורך חיי האיגרת, וכיצד יתרת החוב הולכת ופוחתת עד לסילוק המלא.")
     
-    # --- גרף תזרימי מזומנים ---
-    st.subheader("📉 מפל תזרימי המזומנים: נומינלי מול מהוון")
-    st.markdown("שים לב כיצד ככל שהזמן עובר, ה**ערך הנוכחי (PV)** של כל שקל נשחק משמעותית בגלל מרכיב הזמן והריבית.")
+    fig_time = go.Figure()
     
-    fig = go.Figure()
+    # עמודות תשלום ריבית
+    fig_time.add_trace(go.Bar(
+        x=df_cashflows['שנה מחושבת'],
+        y=df_cashflows['תשלום ריבית'],
+        name='תשלום ריבית (קופון)',
+        marker_color='#2980B9' # כחול יוקרתי לריבית
+    ))
     
-    # תזרים נומינלי (רקע אפור/שקוף)
-    fig.add_trace(go.Bar(
+    # עמודות החזר קרן
+    fig_time.add_trace(go.Bar(
+        x=df_cashflows['שנה מחושבת'],
+        y=df_cashflows['תשלום קרן'],
+        name='החזר קרן',
+        marker_color='#C9A96E' # זהב לקרן
+    ))
+    
+    # קו יתרת קרן 
+    fig_time.add_trace(go.Scatter(
+        x=df_cashflows['שנה מחושבת'],
+        y=df_cashflows['יתרת קרן (לאחר תשלום)'],
+        name='יתרת קרן בלתי מסולקת',
+        mode='lines+markers',
+        line=dict(color='#F5EDD6', width=2, dash='dot'), # צבע קרם לקו היתרה
+        yaxis='y2'
+    ))
+    
+    fig_time.update_layout(
+        barmode='stack', # עמודות מוערמות
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(color='#F5EDD6'),
+        xaxis=dict(title='שנים מהיום', gridcolor='rgba(255,255,255,0.05)'),
+        yaxis=dict(title='סכום התשלום התקופתי', gridcolor='rgba(255,255,255,0.05)'),
+        yaxis2=dict(title='יתרת הקרן', overlaying='y', side='right', showgrid=False),
+        legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="center", x=0.5),
+        margin=dict(l=50, r=50, t=30, b=30),
+    )
+    st.plotly_chart(fig_time, use_container_width=True)
+
+    st.divider()
+    
+    # --- גרף 2: נומינלי מול מהוון ---
+    st.subheader("📉 מפל ההיוון: נומינלי מול PV")
+    st.markdown("שים לב כיצד ככל שהזמן עובר, ה**ערך הנוכחי (PV)** של כל שקל נשחק משמעותית בגלל מרכיב הזמן והריבית. תלמידים: שנו את 'תשואה לפדיון' וראו כיצד השחיקה משתנה.")
+    
+    fig_pv = go.Figure()
+    
+    fig_pv.add_trace(go.Bar(
         x=df_cashflows['שנה מחושבת'], 
         y=df_cashflows['תזרים נומינלי'],
         name='תזרים כספי חוזי (נומינלי)',
@@ -193,24 +240,26 @@ def main():
         marker_line_width=1
     ))
     
-    # תזרים מהוון (זהב)
-    fig.add_trace(go.Bar(
+    fig_pv.add_trace(go.Bar(
         x=df_cashflows['שנה מחושבת'], 
         y=df_cashflows['ערך נוכחי (PV)'],
         name='ערך נוכחי מהוון (PV)',
         marker_color='#C9A96E'
     ))
     
-    fig.update_layout(
+    fig_pv.update_layout(
         barmode='overlay',
         plot_bgcolor='rgba(0,0,0,0)',
         paper_bgcolor='rgba(0,0,0,0)',
         font=dict(color='#F5EDD6'),
         xaxis=dict(title='שנים מהיום', gridcolor='rgba(255,255,255,0.05)'),
         yaxis=dict(title='סכום', gridcolor='rgba(255,255,255,0.05)'),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="center", x=0.5),
+        margin=dict(l=50, r=50, t=30, b=30),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig_pv, use_container_width=True)
+    
+    st.divider()
     
     # --- לוח סילוקין ---
     st.subheader("🧮 לוח סילוקין מפורט")
