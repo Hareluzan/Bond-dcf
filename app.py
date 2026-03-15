@@ -14,7 +14,7 @@ def generate_bond_cashflows(face_value, coupon_rate_pct, ytm_pct, years_to_matur
     schedule = []
     remaining_principal = face_value
     
-    # אם זה פדיון לשיעורין, הקרן מחולקת שווה בשווה על פני כל התקופות (מודל פשטני ללימוד)
+    # אם זה פדיון לשיעורין, הקרן מחולקת שווה בשווה על פני כל התקופות
     principal_payment = face_value / periods if is_amortizing else 0
     
     total_pv = 0
@@ -59,13 +59,37 @@ def generate_bond_cashflows(face_value, coupon_rate_pct, ytm_pct, years_to_matur
 STYLING = """
 <style>
 :root { --gold: #C9A96E; --cream: #F5EDD6; --dark: #0B0E14; --panel: #12161F; --border: rgba(201,169,110,0.35); }
-.stApp { background-color: var(--dark) !important; color: var(--cream) !important; direction: rtl !important; font-family: sans-serif; }
-h1, h2, h3, p, div, label, span { text-align: right !important; direction: rtl !important; }
+
+/* כפיית מצב כהה וטקסטים בהירים - מתקן את בעיות ה-Light Mode */
+.stApp, .stApp > header, [data-testid="stAppViewContainer"] { background-color: var(--dark) !important; color: var(--cream) !important; }
+h1, h2, h3, p, div, label, span { direction: rtl !important; text-align: right !important; color: var(--cream) !important; }
+
+/* עיצוב המדדים והקוביות */
 .metric-box { background: var(--panel); border: 1px solid var(--border); padding: 20px; border-radius: 8px; text-align: center !important; }
-.metric-title { font-size: 1rem; color: #A8A8A8; text-transform: uppercase; letter-spacing: 0.05em; }
-.metric-value { font-size: 2.2rem; color: var(--gold); font-weight: bold; margin-top: 5px; }
+.metric-title { font-size: 1rem; color: #A8A8A8 !important; text-transform: uppercase; letter-spacing: 0.05em; }
+.metric-value { font-size: 2.2rem; color: var(--gold) !important; font-weight: bold; margin-top: 5px; }
 .fair-value-box { background: rgba(201,169,110,0.1); border: 2px solid var(--gold); padding: 20px; border-radius: 8px; text-align: center !important; }
-.math-formula { background: #1a1e28; padding: 15px; border-radius: 8px; text-align: center !important; direction: ltr !important; margin: 15px 0; border: 1px dashed #444; }
+
+/* תיקון שדות הקלט ב-Light Mode */
+div[data-baseweb="select"] > div, div[data-baseweb="input"] > div, div[data-baseweb="base-input"] { background-color: var(--panel) !important; border: 1px solid var(--border) !important; border-radius: 4px !important; }
+div[data-baseweb="select"] *, div[data-baseweb="input"] input { color: var(--cream) !important; -webkit-text-fill-color: var(--cream) !important; }
+[data-baseweb="popover"] > div, [data-baseweb="menu"], div[role="listbox"], ul[role="listbox"] { background-color: var(--panel) !important; }
+li[role="option"] { background-color: var(--panel) !important; }
+li[role="option"]:hover, li[aria-selected="true"] { background-color: #1e2430 !important; }
+li[role="option"] span { color: var(--cream) !important; }
+
+/* הגנה על אייקוני נגישות */
+.st-visually-hidden, .visually-hidden { display: none !important; }
+
+/* טבלת HTML מותאמת לגלילה RTL ולמסכים קטנים */
+.table-container { overflow-x: auto; width: 100%; direction: rtl; margin-bottom: 15px; }
+.custom-table { width: 100%; border-collapse: collapse; color: var(--cream); }
+.custom-table th { color: var(--gold); border-bottom: 1px solid var(--border); padding: 12px 15px; text-align: right; white-space: nowrap; background: rgba(18,22,31,0.9); }
+.custom-table td { border-bottom: 1px solid rgba(255,255,255,0.05); padding: 10px 15px; text-align: right; white-space: nowrap; }
+.custom-table tr:hover { background: rgba(255,255,255,0.03); }
+
+/* מירכוז נוסחאות מתמטיות של Streamlit */
+.katex-html { text-align: center !important; display: block; margin: 15px 0;}
 </style>
 """
 
@@ -73,11 +97,11 @@ h1, h2, h3, p, div, label, span { text-align: right !important; direction: rtl !
 # אפליקציה
 # ============================================================
 def main():
-    st.set_page_config(page_title="מעבדת תמחור אג\"ח", layout="wide")
+    st.set_page_config(page_title="מעבדת תמחור אג\"ח", layout="wide", page_icon="🎓")
     st.markdown(STYLING, unsafe_allow_html=True)
     
     st.markdown("<h1 style='color:#C9A96E; text-align:center !important;'>🎓 מעבדה חינוכית: תמחור והיוון אג\"ח (DCF)</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align:center !important; color:#A8A8A8;'>למד כיצד השוק מתמחר איגרות חוב באמצעות היוון תזרימי מזומנים עתידיים</p>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align:center !important; color:#A8A8A8 !important;'>למד כיצד השוק מתמחר איגרות חוב באמצעות היוון תזרימי מזומנים עתידיים</p>", unsafe_allow_html=True)
     
     st.divider()
     
@@ -99,7 +123,7 @@ def main():
     with col_in3:
         st.subheader("📈 נתוני שוק חיה")
         ytm = st.number_input("תשואה לפדיון נדרשת (Discount Rate %)", min_value=0.1, value=6.0, step=0.5, help="שיעור ההיוון. הריבית שהמשקיעים דורשים היום בשוק עבור סיכון דומה.")
-        market_price = st.number_input("מחיר שוק נוכחי (אופציונלי להשוואה)", min_value=10.0, value=95.0, step=1.0)
+        market_price = st.number_input("מחיר שוק נוכחי (אופציונלי להשוואה)", min_value=0.0, value=95.0, step=1.0)
         
     # --- חישוב ---
     df_cashflows, fair_value, macd = generate_bond_cashflows(face_value, coupon_rate, ytm, years_to_maturity, payment_freq, is_amortizing)
@@ -111,11 +135,15 @@ def main():
     
     # הסבר מתמטי קצר
     st.markdown("""
-    <div dir='rtl'>
-    <b>הנוסחה הבסיסית להיוון:</b> אנו לוקחים כל תזרים מזומנים עתידי ($CF_t$) ומחלקים אותו במקדם ההיוון הכולל את הריבית שהשוק דורש ($r$).
+    <div dir='rtl' style='margin-bottom: 10px;'>
+    <b>הנוסחה הבסיסית להיוון:</b> אנו לוקחים כל תזרים מזומנים עתידי מתוך לוח הסילוקין, ומחלקים אותו במקדם ההיוון המבוסס על הריבית שהשוק דורש (התשואה לפדיון).
     </div>
     """, unsafe_allow_html=True)
-    st.markdown("<div class='math-formula'>$$PV = \\sum_{t=1}^{n} \\frac{CF_t}{(1 + r)^t}$$</div>", unsafe_allow_html=True)
+    
+    # הצגת הנוסחה בצורה טבעית ותקינה ב-Streamlit
+    st.latex(r"PV = \sum_{t=1}^{n} \frac{CF_t}{(1 + r)^t}")
+    
+    st.markdown("<br>", unsafe_allow_html=True)
     
     r1, r2, r3, r4 = st.columns(4)
     
@@ -123,24 +151,25 @@ def main():
         st.markdown(f"<div class='fair-value-box'><div class='metric-title'>השווי ההוגן המחושב (PV)</div><div class='metric-value' style='font-size:2.8rem;'>{fair_value:.2f}</div></div>", unsafe_allow_html=True)
     
     with r2:
-        diff_pct = ((market_price / fair_value) - 1) * 100
         if market_price == 0:
-            status_text = "לא הוזן מחיר"
+            status_text = "לא הוזן מחיר שוק"
             status_color = "#A8A8A8"
-        elif abs(diff_pct) < 0.5:
-            status_text = "🟢 מתומחר הוגן (Fairly Valued)"
-            status_color = "#00cc96"
-        elif diff_pct > 0:
-            status_text = f"🔴 יקר מהשווי התיאורטי ב-{abs(diff_pct):.1f}%"
-            status_color = "#EF553B"
         else:
-            status_text = f"🟢 זול מהשווי התיאורטי ב-{abs(diff_pct):.1f}%"
-            status_color = "#00cc96"
+            diff_pct = ((market_price / fair_value) - 1) * 100
+            if abs(diff_pct) < 0.5:
+                status_text = "🟢 מתומחר הוגן (Fairly Valued)"
+                status_color = "#00cc96"
+            elif diff_pct > 0:
+                status_text = f"🔴 יקר מהשווי התיאורטי ב-{abs(diff_pct):.1f}%"
+                status_color = "#EF553B"
+            else:
+                status_text = f"🟢 זול מהשווי התיאורטי ב-{abs(diff_pct):.1f}%"
+                status_color = "#00cc96"
             
-        st.markdown(f"<div class='metric-box'><div class='metric-title'>מצב תמחור בשוק</div><div class='metric-value' style='color:{status_color}; font-size:1.6rem; margin-top:15px;'>{status_text}</div></div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='metric-box'><div class='metric-title'>מצב תמחור בשוק</div><div class='metric-value' style='color:{status_color} !important; font-size:1.6rem; margin-top:15px;'>{status_text}</div></div>", unsafe_allow_html=True)
 
     with r3:
-        st.markdown(f"<div class='metric-box'><div class='metric-title'>מח\"מ (Macaulay Duration)</div><div class='metric-value'>{macd:.2f} <span style='font-size:1rem; color:#A8A8A8;'>שנים</span></div></div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='metric-box'><div class='metric-title'>מח\"מ (Macaulay Duration)</div><div class='metric-value'>{macd:.2f} <span style='font-size:1rem; color:#A8A8A8 !important;'>שנים</span></div></div>", unsafe_allow_html=True)
         
     with r4:
         total_nominal_return = df_cashflows['תזרים נומינלי'].sum()
@@ -187,19 +216,8 @@ def main():
     st.subheader("🧮 לוח סילוקין מפורט")
     st.markdown("כאן ניתן לראות בדיוק את החישוב עבור כל תקופה. הכפל את ה'תזרים הנומינלי' ב'מקדם היוון' כדי לקבל את הערך הנוכחי להיום.")
     
-    # עיצוב הטבלה
-    st.dataframe(
-        df_cashflows.style.format({
-            "שנה מחושבת": "{:.2f}",
-            "יתרת קרן": "{:.2f}",
-            "תשלום ריבית": "{:.2f}",
-            "תשלום קרן": "{:.2f}",
-            "תזרים נומינלי": "{:.2f}",
-            "ערך נוכחי (PV)": "{:.2f}"
-        }), 
-        use_container_width=True,
-        hide_index=True
-    )
+    # שימוש בטבלת HTML מותאמת אישית לגלילה חלקה למניעת קטיעת טקסטים
+    st.markdown("<div class='table-container'>" + df_cashflows.to_html(index=False, classes="custom-table", float_format="%.2f") + "</div>", unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
