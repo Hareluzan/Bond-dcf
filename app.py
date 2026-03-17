@@ -2,10 +2,12 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import numpy as np
+import scipy.optimize as optimize
 
 # ============================================================
 # הגדרות כלליות
 # ============================================================
+
 st.set_page_config(
     page_title='מעבדת תמחור אג"ח',
     layout="wide",
@@ -160,13 +162,14 @@ li[role="option"] span {{
     border-collapse: collapse;
     color: var(--cream);
     font-size: 0.94rem;
+    direction: ltr;
 }}
 
 .custom-table th {{
     color: var(--gold);
     border-bottom: 1px solid var(--border);
     padding: 12px 14px;
-    text-align: right;
+    text-align: center;
     white-space: nowrap;
     background: rgba(18,22,31,0.95);
     position: sticky;
@@ -176,8 +179,9 @@ li[role="option"] span {{
 .custom-table td {{
     border-bottom: 1px solid rgba(255,255,255,0.05);
     padding: 10px 14px;
-    text-align: right;
+    text-align: center;
     white-space: nowrap;
+    direction: ltr;
 }}
 
 .custom-table tr:hover {{
@@ -200,6 +204,21 @@ hr {{
     padding: 10px;
     border-radius: 8px;
 }}
+
+.discount-summary {{
+    background: rgba(201,169,110,0.07);
+    border: 1px solid var(--border);
+    padding: 12px 18px;
+    border-radius: 10px;
+    margin: 10px 0 0 0;
+    text-align: center !important;
+    font-size: 1.05rem;
+    color: var(--cream) !important;
+}}
+
+.discount-summary b {{
+    color: var(--gold) !important;
+}}
 </style>
 """
 
@@ -208,44 +227,31 @@ st.markdown(STYLING, unsafe_allow_html=True)
 # ============================================================
 # פונקציות חישוב
 # ============================================================
+
 def validate_inputs(face_value, coupon_rate_pct, market_yield_pct, years_to_maturity, payments_per_year):
     errors = []
-
     periods_exact = years_to_maturity * payments_per_year
     periods = int(round(periods_exact))
 
     if face_value <= 0:
         errors.append("הערך הנקוב חייב להיות חיובי.")
-
     if years_to_maturity <= 0:
         errors.append("מספר השנים לפדיון חייב להיות חיובי.")
-
     if payments_per_year <= 0:
         errors.append("מספר התשלומים בשנה חייב להיות חיובי.")
-
     if periods <= 0:
         errors.append("מספר התקופות המחושב חייב להיות חיובי.")
-
     if abs(periods_exact - periods) > 1e-9:
         errors.append("השילוב בין שנים לפדיון לבין תדירות התשלום חייב ליצור מספר שלם של תקופות.")
-
     if coupon_rate_pct < 0:
         errors.append("שער הקופון לא יכול להיות שלילי.")
-
     if market_yield_pct < 0:
         errors.append("תשואת השוק לא יכולה להיות שלילית במודל הנוכחי.")
 
     return errors, periods
 
 
-def generate_bond_cashflows(
-    face_value: float,
-    coupon_rate_pct: float,
-    market_yield_pct: float,
-    years_to_maturity: float,
-    payments_per_year: int,
-    amortization_mode: str,
-):
+def generate_bond_cashflows(face_value: float, coupon_rate_pct: float, market_yield_pct: float, years_to_maturity: float, payments_per_year: int, amortization_mode: str):
     errors, periods = validate_inputs(
         face_value=face_value,
         coupon_rate_pct=coupon_rate_pct,
@@ -269,6 +275,7 @@ def generate_bond_cashflows(
     rows = []
     total_pv = 0.0
     macaulay_numerator = 0.0
+    convexity_numerator = 0.0
     total_interest = 0.0
     total_principal_paid = 0.0
 
@@ -289,6 +296,10 @@ def generate_bond_cashflows(
 
         total_pv += pv_cashflow
         macaulay_numerator += pv_cashflow * time_years
+        
+        # חישוב מונה הקמירות (Convexity) - בשנים
+        convexity_numerator += pv_cashflow * (time_years ** 2 + time_years / payments_per_year)
+        
         total_interest += interest_payment
         total_principal_paid += principal_payment
 
@@ -312,26 +323,21 @@ def generate_bond_cashflows(
 
     macaulay_duration = macaulay_numerator / total_pv if total_pv > 0 else 0.0
     modified_duration = macaulay_duration / (1 + discount_per_period) if (1 + discount_per_period) != 0 else 0.0
+    convexity = (convexity_numerator / total_pv) / ((1 + discount_per_period) ** 2) if total_pv > 0 else 0.0
 
     return {
         "cashflows": df,
         "fair_value": total_pv,
         "macaulay_duration": macaulay_duration,
         "modified_duration": modified_duration,
+        "convexity": convexity,
         "total_interest": total_interest,
         "total_principal_paid": total_principal_paid,
         "periods": periods,
     }
 
 
-def price_bond_for_yield(
-    face_value: float,
-    coupon_rate_pct: float,
-    market_yield_pct: float,
-    years_to_maturity: float,
-    payments_per_year: int,
-    amortization_mode: str,
-) -> float:
+def price_bond_for_yield(face_value: float, coupon_rate_pct: float, market_yield_pct: float, years_to_maturity: float, payments_per_year: int, amortization_mode: str) -> float:
     result = generate_bond_cashflows(
         face_value=face_value,
         coupon_rate_pct=coupon_rate_pct,
@@ -343,6 +349,19 @@ def price_bond_for_yield(
     return result["fair_value"]
 
 
+def calculate_ytm_from_price(face_value, coupon_rate_pct, market_price, years_to_maturity, payments_per_year, amortization_mode):
+    def yield_diff(y):
+        implied_price = price_bond_for_yield(face_value, coupon_rate_pct, y * 100, years_to_maturity, payments_per_year, amortization_mode)
+        return implied_price - market_price
+
+    try:
+        # שימוש בשיטת ניוטון-רפסון למציאת התשואה המאפסת את הפער בין המחיר המחושב למחיר השוק
+        ytm_decimal = optimize.newton(yield_diff, x0=coupon_rate_pct/100)
+        return ytm_decimal * 100
+    except (RuntimeError, ValueError):
+        return None
+
+
 def get_bond_position_vs_par(face_value, fair_value, coupon_rate_pct, market_yield_pct):
     par_diff_pct = ((fair_value / face_value) - 1) * 100 if face_value != 0 else 0.0
 
@@ -350,10 +369,10 @@ def get_bond_position_vs_par(face_value, fair_value, coupon_rate_pct, market_yie
         label = "נסחר סביב פארי"
         color = THEME["muted"]
     elif fair_value > face_value:
-        label = "אג\"ח בפרמיה מעל הפארי"
+        label = 'אג"ח בפרמיה מעל הפארי'
         color = THEME["green"]
     else:
-        label = "אג\"ח בדיסקאונט מתחת לפארי"
+        label = 'אג"ח בדיסקאונט מתחת לפארי'
         color = THEME["red"]
 
     if abs(coupon_rate_pct - market_yield_pct) < 0.05:
@@ -379,9 +398,10 @@ def get_market_pricing_status(fair_value, market_price):
     return f"🟢 זול מהשווי התיאורטי בכ-{abs(diff_pct):.2f}%", THEME["green"], diff_pct
 
 
-def estimate_price_change_from_duration(modified_duration, delta_yield_pct):
+def estimate_price_change_from_duration(modified_duration, convexity, delta_yield_pct):
     delta_y = delta_yield_pct / 100.0
-    return -modified_duration * delta_y * 100.0
+    # נוסחת הקירוב המלאה כולל קמירות
+    return (-modified_duration * delta_y + 0.5 * convexity * (delta_y ** 2)) * 100.0
 
 
 def format_df_for_display(df: pd.DataFrame) -> pd.DataFrame:
@@ -403,14 +423,8 @@ def format_df_for_display(df: pd.DataFrame) -> pd.DataFrame:
     return display_df
 
 
-def build_sensitivity_table(
-    face_value: float,
-    coupon_rate_pct: float,
-    years_to_maturity: float,
-    payments_per_year: int,
-    amortization_mode: str,
-    base_yield_pct: float
-) -> pd.DataFrame:
+@st.cache_data
+def build_sensitivity_table(face_value: float, coupon_rate_pct: float, years_to_maturity: float, payments_per_year: int, amortization_mode: str, base_yield_pct: float) -> pd.DataFrame:
     sensitivity_yields = sorted(set([
         max(0.0, base_yield_pct - 2.0),
         max(0.0, base_yield_pct - 1.0),
@@ -438,14 +452,8 @@ def build_sensitivity_table(
     return pd.DataFrame(rows)
 
 
-def build_price_yield_curve(
-    face_value: float,
-    coupon_rate_pct: float,
-    years_to_maturity: float,
-    payments_per_year: int,
-    amortization_mode: str,
-    base_yield_pct: float
-) -> pd.DataFrame:
+@st.cache_data
+def build_price_yield_curve(face_value: float, coupon_rate_pct: float, years_to_maturity: float, payments_per_year: int, amortization_mode: str, base_yield_pct: float) -> pd.DataFrame:
     y_min = max(0.0, base_yield_pct - 5.0)
     y_max = base_yield_pct + 5.0
     y_values = np.arange(y_min, y_max + 0.0001, 0.25)
@@ -471,6 +479,7 @@ def build_price_yield_curve(
 # ============================================================
 # פונקציות גרפיות
 # ============================================================
+
 def plot_cashflow_components(df: pd.DataFrame, show_remaining_principal: bool):
     fig = go.Figure()
 
@@ -487,16 +496,6 @@ def plot_cashflow_components(df: pd.DataFrame, show_remaining_principal: bool):
         name='תשלום קרן',
         marker_color=THEME["gold"]
     ))
-
-    if show_remaining_principal:
-        fig.add_trace(go.Scatter(
-            x=df["שנים מהיום"],
-            y=df["יתרת קרן לאחר תשלום"],
-            name='יתרת קרן לאחר תשלום',
-            mode='lines+markers',
-            line=dict(color=THEME["cream"], width=2, dash='dot'),
-            yaxis='y2'
-        ))
 
     layout_kwargs = dict(
         barmode='stack',
@@ -523,11 +522,21 @@ def plot_cashflow_components(df: pd.DataFrame, show_remaining_principal: bool):
     )
 
     if show_remaining_principal:
+        fig.add_trace(go.Scatter(
+            x=df["שנים מהיום"],
+            y=df["יתרת קרן לאחר תשלום"],
+            name='יתרת קרן לאחר תשלום',
+            mode='lines+markers',
+            line=dict(color=THEME["cream"], width=2, dash='dot'),
+            yaxis='y2'
+        ))
         layout_kwargs["yaxis2"] = dict(
-            title='יתרת קרן',
+            title='יתרת קרן (ציר ימין)',
             overlaying='y',
             side='right',
-            showgrid=False
+            showgrid=False,
+            tickfont=dict(color=THEME["cream"]),
+            titlefont=dict(color=THEME["cream"]),
         )
 
     fig.update_layout(**layout_kwargs)
@@ -541,8 +550,8 @@ def plot_discounted_vs_nominal(df: pd.DataFrame):
         x=df["שנים מהיום"],
         y=df["תזרים נומינלי"],
         name='תזרים נומינלי',
-        marker_color='rgba(255, 255, 255, 0.10)',
-        marker_line_color='rgba(255, 255, 255, 0.30)',
+        marker_color='rgba(255,255,255,0.18)',
+        marker_line_color='rgba(255,255,255,0.40)',
         marker_line_width=1
     ))
 
@@ -554,7 +563,9 @@ def plot_discounted_vs_nominal(df: pd.DataFrame):
     ))
 
     fig.update_layout(
-        barmode='overlay',
+        barmode='group',
+        bargap=0.18,
+        bargroupgap=0.06,
         plot_bgcolor='rgba(0,0,0,0)',
         paper_bgcolor='rgba(0,0,0,0)',
         font=dict(color=THEME["cream"]),
@@ -590,7 +601,7 @@ def plot_price_yield_curve(curve_df: pd.DataFrame, current_yield: float, current
         y=[current_price],
         mode="markers",
         name='הנקודה הנוכחית',
-        marker=dict(size=10, color=THEME["blue"])
+        marker=dict(size=12, color=THEME["blue"], line=dict(color=THEME["cream"], width=2))
     ))
 
     fig.add_hline(
@@ -598,7 +609,18 @@ def plot_price_yield_curve(curve_df: pd.DataFrame, current_yield: float, current
         line_dash="dot",
         line_color=THEME["muted"],
         annotation_text="פארי",
-        annotation_position="top left"
+        annotation_position="top right",
+        annotation_font_color=THEME["muted"],
+    )
+
+    fig.add_vline(
+        x=current_yield,
+        line_dash="dash",
+        line_color=THEME["blue"],
+        opacity=0.45,
+        annotation_text=f"תשואה נוכחית: {current_yield:.1f}%",
+        annotation_position="top right",
+        annotation_font_color=THEME["blue"],
     )
 
     fig.update_layout(
@@ -624,6 +646,7 @@ def plot_price_yield_curve(curve_df: pd.DataFrame, current_yield: float, current
 # ============================================================
 # ממשק
 # ============================================================
+
 def main():
     st.markdown(
         f"<h1 style='color:{THEME['gold']}; text-align:center !important;'>🎓 מעבדה חינוכית: תמחור והיוון אג\"ח</h1>",
@@ -645,7 +668,7 @@ def main():
             min_value=1.0,
             value=100.0,
             step=10.0,
-            help="הסכום שהמנפיק מתחייב להחזיר לבעל האג\"ח."
+            help='הסכום שהמנפיק מתחייב להחזיר לבעל האג"ח.'
         )
         coupon_rate = st.number_input(
             "שער קופון שנתי (%)",
@@ -679,8 +702,8 @@ def main():
         )
 
         show_remaining_principal = st.checkbox(
-            "הצג גם יתרת קרן בגרף",
-            value=True
+            "הצג גם יתרת קרן בגרף (מצב מתקדם)",
+            value=False
         )
 
     with col_in3:
@@ -691,7 +714,7 @@ def main():
             max_value=20.0,
             value=6.0,
             step=0.1,
-            help="זהו שיעור ההיוון שלפיו השוק מתמחר היום תזרימים מאג\"ח דומה בסיכון ובמח\"מ."
+            help='זהו שיעור ההיוון שלפיו השוק מתמחר היום תזרימים מאג"ח דומה בסיכון ובמח"מ.'
         )
 
         market_price_text = st.text_input(
@@ -701,10 +724,11 @@ def main():
         )
 
     # --------------------------------------------------------
-    # ולידציה למחיר שוק
+    # ולידציה למחיר שוק וחילוץ YTM
     # --------------------------------------------------------
     market_price = None
     market_price_text = market_price_text.strip()
+    implied_ytm = None
 
     if market_price_text != "":
         try:
@@ -712,12 +736,14 @@ def main():
             if market_price < 0:
                 st.error("מחיר שוק לא יכול להיות שלילי.")
                 st.stop()
+            # חישוב YTM ממחיר השוק
+            implied_ytm = calculate_ytm_from_price(face_value, coupon_rate, market_price, years_to_maturity, payment_freq, amortization_mode)
         except ValueError:
             st.error("מחיר השוק שהוזן אינו מספר תקין.")
             st.stop()
 
     # --------------------------------------------------------
-    # חישוב
+    # חישוב עיקרי
     # --------------------------------------------------------
     try:
         result = generate_bond_cashflows(
@@ -736,8 +762,8 @@ def main():
     fair_value = result["fair_value"]
     macaulay_duration = result["macaulay_duration"]
     modified_duration = result["modified_duration"]
+    convexity = result["convexity"]
     total_interest = result["total_interest"]
-    total_principal_paid = result["total_principal_paid"]
     total_nominal_cashflows = df_cashflows["תזרים נומינלי"].sum()
 
     market_status_text, market_status_color, market_diff_pct = get_market_pricing_status(
@@ -752,8 +778,8 @@ def main():
         market_yield_pct=market_yield
     )
 
-    approx_price_change_up_1 = estimate_price_change_from_duration(modified_duration, 1.0)
-    approx_price_change_down_1 = -approx_price_change_up_1
+    approx_price_change_up_1 = estimate_price_change_from_duration(modified_duration, convexity, 1.0)
+    approx_price_change_down_1 = estimate_price_change_from_duration(modified_duration, convexity, -1.0)
 
     st.divider()
 
@@ -793,12 +819,13 @@ def main():
         )
 
     with c2:
+        ytm_display = f"YTM גלום: {implied_ytm:.2f}%" if implied_ytm is not None else "לא חושב YTM"
         st.markdown(
             f"""
             <div class='metric-box'>
                 <div class='metric-title'>תמחור מול מחיר שוק</div>
                 <div class='metric-value' style='color:{market_status_color} !important; font-size:1.45rem;'>{market_status_text}</div>
-                <div class='metric-sub'>{'' if market_diff_pct is None else f'פער של {market_diff_pct:.2f}% לעומת השווי התיאורטי'}</div>
+                <div class='metric-sub'>{ytm_display}</div>
             </div>
             """,
             unsafe_allow_html=True
@@ -822,7 +849,7 @@ def main():
             <div class='metric-box'>
                 <div class='metric-title'>Modified Duration</div>
                 <div class='metric-value'>{modified_duration:.2f}</div>
-                <div class='metric-sub'>קירוב לרגישות המחיר לשינוי בתשואה</div>
+                <div class='metric-sub'>קמירות (Convexity): {convexity:.2f}</div>
             </div>
             """,
             unsafe_allow_html=True
@@ -894,10 +921,11 @@ def main():
     # ============================================================
     st.subheader("⏱️ ציר זמן: מרכיבי התזרים")
     st.markdown(
-        "הגרף מציג בכל תקופה כמה מתוך התשלום הוא ריבית, כמה הוא קרן, ובבחירה מתאימה גם כיצד יתרת הקרן יורדת לאורך חיי האיגרת."
+        "הגרף מציג בכל תקופה כמה מתוך התשלום הוא ריבית וכמה הוא קרן."
+        + (" יתרת הקרן (קו מקווקו, ציר ימין) מראה כיצד החוב יורד לאורך הזמן." if show_remaining_principal else "")
     )
     fig_cashflows = plot_cashflow_components(df_cashflows, show_remaining_principal=show_remaining_principal)
-    st.plotly_chart(fig_cashflows, use_container_width=True)
+    st.plotly_chart(fig_cashflows, use_container_width=True, config={'displayModeBar': False})
 
     st.divider()
 
@@ -906,19 +934,28 @@ def main():
     # ============================================================
     st.subheader("📉 תזרים נומינלי מול ערך נוכחי")
     st.markdown(
-        "כאן ניתן לראות כיצד כל תזרים עתידי נשחק כאשר מהוונים אותו להיום. ככל שהתזרים רחוק יותר בזמן, הערך הנוכחי שלו נמוך יותר."
+        "כאן ניתן לראות כיצד כל תזרים עתידי נשחק כאשר מהוונים אותו להיום. "
+        "ככל שהתזרים רחוק יותר בזמן, הפער בין העמודות גדול יותר."
     )
     fig_pv = plot_discounted_vs_nominal(df_cashflows)
-    st.plotly_chart(fig_pv, use_container_width=True)
+    st.plotly_chart(fig_pv, use_container_width=True, config={'displayModeBar': False})
+
+    if total_nominal_cashflows > 0:
+        discount_pct = (1 - fair_value / total_nominal_cashflows) * 100
+        st.markdown(
+            f"<div class='discount-summary'>סך ההיוון: <b>{discount_pct:.1f}%</b> מהתזרים הנומינלי נשחק עקב עיתוי הכסף בזמן</div>",
+            unsafe_allow_html=True
+        )
 
     st.divider()
 
     # ============================================================
     # גרף 3
     # ============================================================
-    st.subheader("📈 מחיר אג\"ח מול תשואת שוק")
+    st.subheader('📈 מחיר אג"ח מול תשואת שוק')
     st.markdown(
-        "זהו אחד הגרפים החשובים ביותר בלימוד אג\"ח: כאשר תשואת השוק עולה, מחיר האיגרת יורד, ולהפך."
+        "זהו אחד הגרפים החשובים ביותר בלימוד אג\"ח: כאשר תשואת השוק עולה, מחיר האיגרת יורד, ולהפך. "
+        "הנקודה הכחולה וקו האנכי מסמנים את התמחור הנוכחי."
     )
     curve_df = build_price_yield_curve(
         face_value=face_value,
@@ -934,7 +971,7 @@ def main():
         current_price=fair_value,
         face_value=face_value
     )
-    st.plotly_chart(fig_curve, use_container_width=True)
+    st.plotly_chart(fig_curve, use_container_width=True, config={'displayModeBar': False})
 
     st.divider()
 
@@ -998,13 +1035,12 @@ def main():
         1. אג"ח היא סדרה של תזרימים עתידיים, והמחיר שלה היום הוא הערך הנוכחי של אותם תזרימים.<br><br>
         2. כאשר תשואת השוק עולה, המחיר התיאורטי של האג"ח יורד.<br><br>
         3. אם הקופון גבוה מתשואת השוק, האג"ח נוטה להיסחר בפרמיה. אם הקופון נמוך מתשואת השוק, היא נוטה להיסחר בדיסקאונט.<br><br>
-        4. מח"מ מקולי מתאר את הזמן הממוצע המשוקלל לקבלת התזרימים, ו-Modified Duration מספק קירוב שימושי לרגישות המחיר.<br><br>
+        4. מח"מ מקולי מתאר את הזמן הממוצע המשוקלל לקבלת התזרימים, ו-Modified Duration בשילוב קמירות (Convexity) מספק קירוב מדויק יותר לרגישות המחיר.<br><br>
         5. באג"ח לשיעורין הקרן חוזרת בהדרגה, ולכן בדרך כלל המח"מ קצר יותר מאשר באג"ח Bullet מקבילה.
         </div>
         """,
         unsafe_allow_html=True
     )
-
 
 if __name__ == "__main__":
     main()
