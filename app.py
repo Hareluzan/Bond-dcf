@@ -437,7 +437,7 @@ def build_sensitivity_table(face_value: float, coupon_rate_pct: float, years_to_
     for y in sensitivity_yields:
         price = price_bond_for_yield(
             face_value=face_value,
-            coupon_rate_pct=coupon_rate,
+            coupon_rate_pct=coupon_rate_pct,
             market_yield_pct=y,
             years_to_maturity=years_to_maturity,
             payments_per_year=payments_per_year,
