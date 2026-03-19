@@ -437,7 +437,7 @@ def build_sensitivity_table(face_value: float, coupon_rate_pct: float, years_to_
     for y in sensitivity_yields:
         price = price_bond_for_yield(
             face_value=face_value,
-            coupon_rate_pct=coupon_rate_pct,
+            coupon_rate_pct=coupon_rate,
             market_yield_pct=y,
             years_to_maturity=years_to_maturity,
             payments_per_year=payments_per_year,
@@ -708,12 +708,12 @@ def main():
 
     with col_in3:
         st.subheader("📈 נתוני שוק")
-        market_yield = st.slider(
+        market_yield = st.number_input(
             "תשואת שוק נדרשת / שיעור היוון (%)",
             min_value=0.0,
-            max_value=20.0,
             value=6.0,
             step=0.1,
+            format="%.2f",
             help='זהו שיעור ההיוון שלפיו השוק מתמחר היום תזרימים מאג"ח דומה בסיכון ובמח"מ.'
         )
 
