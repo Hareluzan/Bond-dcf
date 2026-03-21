@@ -104,6 +104,19 @@ li[role="option"] span {{
     color: var(--cream) !important;
 }}
 
+/* סגנון לטאבים */
+button[data-baseweb="tab"] {{
+    background-color: transparent !important;
+    color: var(--muted) !important;
+    font-size: 1.1rem !important;
+    padding-bottom: 10px !important;
+}}
+
+button[data-baseweb="tab"][aria-selected="true"] {{
+    color: var(--gold) !important;
+    border-bottom-color: var(--gold) !important;
+}}
+
 .metric-box {{
     background: var(--panel);
     border: 1px solid var(--border);
@@ -400,7 +413,6 @@ def get_market_pricing_status(fair_value, market_price):
 
 def estimate_price_change_from_duration(modified_duration, convexity, delta_yield_pct):
     delta_y = delta_yield_pct / 100.0
-    # נוסחת הקירוב המלאה כולל קמירות
     return (-modified_duration * delta_y + 0.5 * convexity * (delta_y ** 2)) * 100.0
 
 
@@ -449,6 +461,36 @@ def build_sensitivity_table(face_value: float, coupon_rate_pct: float, years_to_
             "פער מפארי (%)": ((price / face_value) - 1) * 100 if face_value != 0 else 0.0,
         })
 
+    return pd.DataFrame(rows)
+
+
+@st.cache_data
+def build_reverse_sensitivity_table(face_value: float, coupon_rate_pct: float, years_to_maturity: float, payments_per_year: int, amortization_mode: str, base_price: float) -> pd.DataFrame:
+    # יצירת טווח מחירים סביב מחיר הבסיס לבדיקת רגישות ה-YTM
+    sensitivity_prices = sorted(set([
+        max(0.01, base_price - 2.0),
+        max(0.01, base_price - 1.0),
+        base_price,
+        base_price + 1.0,
+        base_price + 2.0,
+    ]))
+
+    rows = []
+    for p in sensitivity_prices:
+        ytm = calculate_ytm_from_price(
+            face_value=face_value,
+            coupon_rate_pct=coupon_rate_pct,
+            market_price=p,
+            years_to_maturity=years_to_maturity,
+            payments_per_year=payments_per_year,
+            amortization_mode=amortization_mode
+        )
+        if ytm is not None:
+            rows.append({
+                "מחיר שוק": p,
+                "YTM נגזר (%)": ytm,
+                "פער מפארי (%)": ((p / face_value) - 1) * 100 if face_value != 0 else 0.0,
+            })
     return pd.DataFrame(rows)
 
 
@@ -659,6 +701,9 @@ def main():
 
     st.divider()
 
+    # ============================================================
+    # אזור הזנת נתונים (תמיד גלוי למעלה)
+    # ============================================================
     col_in1, col_in2, col_in3 = st.columns(3)
 
     with col_in1:
@@ -699,11 +744,6 @@ def main():
             options=list(AMORTIZATION_OPTIONS.keys()),
             format_func=lambda x: AMORTIZATION_OPTIONS[x],
             help="Bullet: הקרן מוחזרת בסוף. קרן שווה: החזר קרן אחיד לאורך חיי האיגרת."
-        )
-
-        show_remaining_principal = st.checkbox(
-            "הצג גם יתרת קרן בגרף (מצב מתקדם)",
-            value=False
         )
 
     with col_in3:
@@ -784,26 +824,8 @@ def main():
     st.divider()
 
     # ============================================================
-    # הסבר קצר
+    # תוצאות מרכזיות (תמיד גלוי למעלה)
     # ============================================================
-    st.subheader("🧠 הרעיון הכלכלי")
-    st.markdown(
-        """
-        <div class='note-box'>
-        אג"ח היא סדרת תזרימי מזומנים עתידיים. כדי להעריך מהו המחיר ההוגן שלה היום, מהוונים כל תזרים עתידי לפי תשואת השוק הנדרשת.
-        ככל שתשואת השוק גבוהה יותר, הערך הנוכחי של התזרימים נמוך יותר, ולכן מחיר האג"ח יורד.
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-    st.latex(r"PV = \sum_{t=1}^{n}\frac{CF_t}{(1+r)^t}")
-
-    # ============================================================
-    # תוצאות מרכזיות
-    # ============================================================
-    st.subheader("📊 תוצאות התמחור")
-
     c1, c2, c3, c4 = st.columns(4)
 
     with c1:
@@ -917,126 +939,153 @@ def main():
     st.divider()
 
     # ============================================================
-    # גרף 1
+    # חלוקה ללשוניות (Tabs) - כאן מתחיל הקסם הפדגוגי!
     # ============================================================
-    st.subheader("⏱️ ציר זמן: מרכיבי התזרים")
-    st.markdown(
-        "הגרף מציג בכל תקופה כמה מתוך התשלום הוא ריבית וכמה הוא קרן."
-        + (" יתרת הקרן (קו מקווקו, ציר ימין) מראה כיצד החוב יורד לאורך הזמן." if show_remaining_principal else "")
-    )
-    fig_cashflows = plot_cashflow_components(df_cashflows, show_remaining_principal=show_remaining_principal)
-    st.plotly_chart(fig_cashflows, use_container_width=True, config={'displayModeBar': False})
+    tab1, tab2, tab3 = st.tabs([
+        "📊 תמחור תיאורטי (תשואה ← מחיר)", 
+        "🏢 חדר עסקאות (מחיר ← YTM)", 
+        "🧮 לוח סילוקין מפורט"
+    ])
 
-    st.divider()
-
-    # ============================================================
-    # גרף 2
-    # ============================================================
-    st.subheader("📉 תזרים נומינלי מול ערך נוכחי")
-    st.markdown(
-        "כאן ניתן לראות כיצד כל תזרים עתידי נשחק כאשר מהוונים אותו להיום. "
-        "ככל שהתזרים רחוק יותר בזמן, הפער בין העמודות גדול יותר."
-    )
-    fig_pv = plot_discounted_vs_nominal(df_cashflows)
-    st.plotly_chart(fig_pv, use_container_width=True, config={'displayModeBar': False})
-
-    if total_nominal_cashflows > 0:
-        discount_pct = (1 - fair_value / total_nominal_cashflows) * 100
+    # ------------------------------------------------------------
+    # טאב 1: התיאוריה הבסיסית
+    # ------------------------------------------------------------
+    with tab1:
+        st.subheader("🧠 הרעיון הכלכלי: איך תשואת השוק משפיעה על המחיר")
         st.markdown(
-            f"<div class='discount-summary'>סך ההיוון: <b>{discount_pct:.1f}%</b> מהתזרים הנומינלי נשחק עקב עיתוי הכסף בזמן</div>",
+            """
+            אג"ח היא סדרת תזרימי מזומנים עתידיים. כדי להעריך מהו המחיר ההוגן שלה היום, אנו לוקחים כל תזרים ומהוונים אותו חזרה להיום, 
+            לפי תשואת השוק הנדרשת (האלטרנטיבה בסיכון דומה). 
+            <br>ככל שהריבית/התשואה בשוק עולה, הערך הנוכחי (PV) של התזרימים הללו קטן, ולכן המחיר של איגרת החוב יורד (ולהפך).
+            """, unsafe_allow_html=True
+        )
+        st.latex(r"PV = \sum_{t=1}^{n}\frac{CF_t}{(1+r)^t}")
+        
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        col_t1_1, col_t1_2 = st.columns(2)
+        
+        with col_t1_1:
+            st.subheader("📉 תזרים נומינלי מול ערך נוכחי")
+            fig_pv = plot_discounted_vs_nominal(df_cashflows)
+            st.plotly_chart(fig_pv, use_container_width=True, config={'displayModeBar': False})
+            
+            if total_nominal_cashflows > 0:
+                discount_pct = (1 - fair_value / total_nominal_cashflows) * 100
+                st.markdown(
+                    f"<div class='discount-summary'>סך ההיוון: <b>{discount_pct:.1f}%</b> מהתזרים הנומינלי נשחק עקב עיתוי הכסף בזמן</div>",
+                    unsafe_allow_html=True
+                )
+
+        with col_t1_2:
+            st.subheader('📈 עקומת תמחור: מחיר מול תשואת שוק')
+            curve_df = build_price_yield_curve(
+                face_value=face_value, coupon_rate_pct=coupon_rate,
+                years_to_maturity=years_to_maturity, payments_per_year=payment_freq,
+                amortization_mode=amortization_mode, base_yield_pct=market_yield
+            )
+            fig_curve = plot_price_yield_curve(
+                curve_df=curve_df, current_yield=market_yield,
+                current_price=fair_value, face_value=face_value
+            )
+            st.plotly_chart(fig_curve, use_container_width=True, config={'displayModeBar': False})
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.subheader("🧪 טבלת רגישות: כיצד שינוי בתשואה ישפיע על המחיר התיאורטי?")
+        
+        sensitivity_df = build_sensitivity_table(
+            face_value=face_value, coupon_rate_pct=coupon_rate,
+            years_to_maturity=years_to_maturity, payments_per_year=payment_freq,
+            amortization_mode=amortization_mode, base_yield_pct=market_yield
+        ).copy()
+
+        sensitivity_display = sensitivity_df.copy()
+        sensitivity_display["תשואת שוק (%)"] = sensitivity_display["תשואת שוק (%)"].map(lambda x: f"{x:.2f}%")
+        sensitivity_display["מחיר תיאורטי"] = sensitivity_display["מחיר תיאורטי"].map(lambda x: f"{x:,.2f}")
+        sensitivity_display["פער מפארי (%)"] = sensitivity_display["פער מפארי (%)"].map(lambda x: f"{x:.2f}%")
+
+        st.markdown(
+            "<div class='table-container'>" +
+            sensitivity_display.to_html(index=False, classes="custom-table", escape=False) +
+            "</div>",
+            unsafe_allow_html=True
+        )
+
+    # ------------------------------------------------------------
+    # טאב 2: חדר עסקאות (פרקטיקה)
+    # ------------------------------------------------------------
+    with tab2:
+        st.subheader("🏢 מציאות שוק ההון: המחיר קובע את התשואה (YTM)")
+        st.markdown(
+            """
+            <div class='note-box'>
+            בניגוד לספרי הלימוד (שם קודם בוחרים את שיעור ההיוון ומחשבים מחיר), <b>בחדר עסקאות קורה בדיוק ההפך</b>: 
+            המחיר הוא נתון אובייקטיבי שנקבע בבורסה על ידי כוחות של היצע וביקוש. מתוך המחיר הזה, המשקיעים גוזרים את <b>התשואה לפדיון (YTM)</b> - שהיא שיעור התשואה הפנימי (IRR) שיקבל מי שיקנה את האיגרת במחיר השוק הנוכחי ויחזיק בה עד לפדיון.
+            </div>
+            """, unsafe_allow_html=True
+        )
+        
+        st.subheader("🔄 טבלת רגישות הפוכה: מהו ה-YTM הנגזר ממחירי שוק שונים?")
+        st.markdown(
+            "הטבלה הבאה לוקחת את מחיר השוק שהזנת למעלה (או את השווי התיאורטי, אם לא הזנת), ומדגימה מה יקרה לתשואה לפדיון אם מחיר האיגרת במסך המסחר יעלה או יירד."
+        )
+
+        base_price_for_reverse = market_price if market_price is not None else fair_value
+        
+        reverse_sens_df = build_reverse_sensitivity_table(
+            face_value=face_value, coupon_rate_pct=coupon_rate,
+            years_to_maturity=years_to_maturity, payments_per_year=payment_freq,
+            amortization_mode=amortization_mode, base_price=base_price_for_reverse
+        ).copy()
+        
+        if not reverse_sens_df.empty:
+            reverse_display = reverse_sens_df.copy()
+            reverse_display["מחיר שוק"] = reverse_display["מחיר שוק"].map(lambda x: f"{x:,.2f}")
+            reverse_display["YTM נגזר (%)"] = reverse_display["YTM נגזר (%)"].map(lambda x: f"{x:.2f}%")
+            reverse_display["פער מפארי (%)"] = reverse_display["פער מפארי (%)"].map(lambda x: f"{x:.2f}%")
+
+            st.markdown(
+                "<div class='table-container'>" +
+                reverse_display.to_html(index=False, classes="custom-table", escape=False) +
+                "</div>",
+                unsafe_allow_html=True
+            )
+
+    # ------------------------------------------------------------
+    # טאב 3: לוח סילוקין מפורט
+    # ------------------------------------------------------------
+    with tab3:
+        st.subheader("⏱️ ציר זמן: מרכיבי התזרים לאורך חיי האיגרת")
+        show_remaining_principal_tab3 = st.checkbox("הצג גם יתרת קרן (קו מקווקו)", value=False)
+        fig_cashflows = plot_cashflow_components(df_cashflows, show_remaining_principal=show_remaining_principal_tab3)
+        st.plotly_chart(fig_cashflows, use_container_width=True, config={'displayModeBar': False})
+
+        st.subheader("🧮 טבלת סילוקין מפורטת")
+        st.markdown(
+            "פירוט של כל תקופת תשלום: כמה ממנה הוא החזר ריבית, כמה החזר קרן, מקדם ההיוון לאותה תקופה, והערך הנוכחי של התזרים הבדיד."
+        )
+        display_df = format_df_for_display(df_cashflows)
+        st.markdown(
+            "<div class='table-container'>" +
+            display_df.to_html(index=False, classes="custom-table", escape=False) +
+            "</div>",
             unsafe_allow_html=True
         )
 
     st.divider()
 
     # ============================================================
-    # גרף 3
+    # נקודות לימוד קבועות בתחתית הדף
     # ============================================================
-    st.subheader('📈 מחיר אג"ח מול תשואת שוק')
-    st.markdown(
-        "זהו אחד הגרפים החשובים ביותר בלימוד אג\"ח: כאשר תשואת השוק עולה, מחיר האיגרת יורד, ולהפך. "
-        "הנקודה הכחולה וקו האנכי מסמנים את התמחור הנוכחי."
-    )
-    curve_df = build_price_yield_curve(
-        face_value=face_value,
-        coupon_rate_pct=coupon_rate,
-        years_to_maturity=years_to_maturity,
-        payments_per_year=payment_freq,
-        amortization_mode=amortization_mode,
-        base_yield_pct=market_yield
-    )
-    fig_curve = plot_price_yield_curve(
-        curve_df=curve_df,
-        current_yield=market_yield,
-        current_price=fair_value,
-        face_value=face_value
-    )
-    st.plotly_chart(fig_curve, use_container_width=True, config={'displayModeBar': False})
-
-    st.divider()
-
-    # ============================================================
-    # טבלת רגישות
-    # ============================================================
-    st.subheader("🧪 טבלת רגישות למחיר האג\"ח")
-    st.markdown(
-        "הטבלה מראה כיצד המחיר התיאורטי משתנה כאשר תשואת השוק עולה או יורדת סביב נקודת הבסיס."
-    )
-
-    sensitivity_df = build_sensitivity_table(
-        face_value=face_value,
-        coupon_rate_pct=coupon_rate,
-        years_to_maturity=years_to_maturity,
-        payments_per_year=payment_freq,
-        amortization_mode=amortization_mode,
-        base_yield_pct=market_yield
-    ).copy()
-
-    sensitivity_display = sensitivity_df.copy()
-    sensitivity_display["תשואת שוק (%)"] = sensitivity_display["תשואת שוק (%)"].map(lambda x: f"{x:.2f}%")
-    sensitivity_display["מחיר תיאורטי"] = sensitivity_display["מחיר תיאורטי"].map(lambda x: f"{x:,.2f}")
-    sensitivity_display["פער מפארי (%)"] = sensitivity_display["פער מפארי (%)"].map(lambda x: f"{x:.2f}%")
-
-    st.markdown(
-        "<div class='table-container'>" +
-        sensitivity_display.to_html(index=False, classes="custom-table", escape=False) +
-        "</div>",
-        unsafe_allow_html=True
-    )
-
-    st.divider()
-
-    # ============================================================
-    # לוח סילוקין
-    # ============================================================
-    st.subheader("🧮 לוח סילוקין מפורט")
-    st.markdown(
-        "כאן מופיעים כל התזרימים לפי תקופות: יתרת הקרן, תשלום הריבית, תשלום הקרן, מקדם ההיוון והערך הנוכחי של כל תזרים."
-    )
-
-    display_df = format_df_for_display(df_cashflows)
-
-    st.markdown(
-        "<div class='table-container'>" +
-        display_df.to_html(index=False, classes="custom-table", escape=False) +
-        "</div>",
-        unsafe_allow_html=True
-    )
-
-    st.divider()
-
-    # ============================================================
-    # נקודות לימוד
-    # ============================================================
-    st.subheader("📚 מסקנות לימודיות לתלמידים")
+    st.subheader("📚 מסקנות לימודיות (Takeaways)")
     st.markdown(
         """
         <div class='note-box'>
-        1. אג"ח היא סדרה של תזרימים עתידיים, והמחיר שלה היום הוא הערך הנוכחי של אותם תזרימים.<br><br>
-        2. כאשר תשואת השוק עולה, המחיר התיאורטי של האג"ח יורד.<br><br>
-        3. אם הקופון גבוה מתשואת השוק, האג"ח נוטה להיסחר בפרמיה. אם הקופון נמוך מתשואת השוק, היא נוטה להיסחר בדיסקאונט.<br><br>
-        4. מח"מ מקולי מתאר את הזמן הממוצע המשוקלל לקבלת התזרימים, ו-Modified Duration בשילוב קמירות (Convexity) מספק קירוב מדויק יותר לרגישות המחיר.<br><br>
-        5. באג"ח לשיעורין הקרן חוזרת בהדרגה, ולכן בדרך כלל המח"מ קצר יותר מאשר באג"ח Bullet מקבילה.
+        1. <b>הקשר ההפוך (מחיר $\leftrightarrow$ תשואה):</b> עליית תשואה בשוק מובילה לירידה במחיר האג"ח. הקשר הזה אינו לינארי, אלא קמור (אפקט הקמירות/Convexity מספק רווחיות א-סימטרית לטובת המשקיע).<br><br>
+        2. <b>YTM:</b> בפרקטיקה, השוק קובע את המחיר בהתאם לסיכון ופרמיות נדרשות, והמשקיעים גוזרים מהמחיר את התשואה לפדיון.<br><br>
+        3. <b>אפקט הקופון:</b> קופון שגבוה מתשואת השוק $\rightarrow$ מחיר האג"ח נוטה להיסחר בפרמיה מעל הפארי. קופון נמוך מהתשואה $\rightarrow$ מחיר דיסקאונט.<br><br>
+        4. <b>סיכון ריבית (מח"מ):</b> מח"מ מקולי מתאר את הזמן הממוצע המשוקלל לקבלת הכסף, והמח"מ המותאם (Modified Duration) מתרגם את זה לקירוב הרגישות של מחיר האג"ח לכל תזוזה של 1% בריבית.<br><br>
+        5. <b>לוחות סילוקין:</b> באג"ח פדיון לשיעורין, הקרן מוחזרת בהדרגה לאורך חיי האיגרת, ולכן רוב התזרימים מתקבלים מוקדם יותר, מה שמקצר משמעותית את המח"מ בהשוואה לאג"ח Bullet.
         </div>
         """,
         unsafe_allow_html=True
