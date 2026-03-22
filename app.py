@@ -3,6 +3,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import numpy as np
 import scipy.optimize as optimize
+import streamlit_authenticator as stauth
 
 # ============================================================
 # הגדרות כלליות
@@ -368,7 +369,6 @@ def calculate_ytm_from_price(face_value, coupon_rate_pct, market_price, years_to
         return implied_price - market_price
 
     try:
-        # שימוש בשיטת ניוטון-רפסון למציאת התשואה המאפסת את הפער בין המחיר המחושב למחיר השוק
         ytm_decimal = optimize.newton(yield_diff, x0=coupon_rate_pct/100)
         return ytm_decimal * 100
     except (RuntimeError, ValueError):
@@ -466,7 +466,6 @@ def build_sensitivity_table(face_value: float, coupon_rate_pct: float, years_to_
 
 @st.cache_data
 def build_reverse_sensitivity_table(face_value: float, coupon_rate_pct: float, years_to_maturity: float, payments_per_year: int, amortization_mode: str, base_price: float) -> pd.DataFrame:
-    # יצירת טווח מחירים סביב מחיר הבסיס לבדיקת רגישות ה-YTM
     sensitivity_prices = sorted(set([
         max(0.01, base_price - 2.0),
         max(0.01, base_price - 1.0),
@@ -686,10 +685,9 @@ def plot_price_yield_curve(curve_df: pd.DataFrame, current_yield: float, current
 
 
 # ============================================================
-# ממשק
+# המעבדה עצמה (מופעלת רק לאחר התחברות מוצלחת)
 # ============================================================
-
-def main():
+def run_bond_lab():
     st.markdown(
         f"<h1 style='color:{THEME['gold']}; text-align:center !important;'>🎓 מעבדה חינוכית: תמחור והיוון אג\"ח</h1>",
         unsafe_allow_html=True
@@ -701,9 +699,6 @@ def main():
 
     st.divider()
 
-    # ============================================================
-    # אזור הזנת נתונים (תמיד גלוי למעלה)
-    # ============================================================
     col_in1, col_in2, col_in3 = st.columns(3)
 
     with col_in1:
@@ -763,9 +758,6 @@ def main():
             help="אפשר להשאיר ריק אם לא רוצים להשוות למחיר שוק בפועל."
         )
 
-    # --------------------------------------------------------
-    # ולידציה למחיר שוק וחילוץ YTM
-    # --------------------------------------------------------
     market_price = None
     market_price_text = market_price_text.strip()
     implied_ytm = None
@@ -776,15 +768,11 @@ def main():
             if market_price < 0:
                 st.error("מחיר שוק לא יכול להיות שלילי.")
                 st.stop()
-            # חישוב YTM ממחיר השוק
             implied_ytm = calculate_ytm_from_price(face_value, coupon_rate, market_price, years_to_maturity, payment_freq, amortization_mode)
         except ValueError:
             st.error("מחיר השוק שהוזן אינו מספר תקין.")
             st.stop()
 
-    # --------------------------------------------------------
-    # חישוב עיקרי
-    # --------------------------------------------------------
     try:
         result = generate_bond_cashflows(
             face_value=face_value,
@@ -823,9 +811,6 @@ def main():
 
     st.divider()
 
-    # ============================================================
-    # תוצאות מרכזיות (תמיד גלוי למעלה)
-    # ============================================================
     c1, c2, c3, c4 = st.columns(4)
 
     with c1:
@@ -938,18 +923,12 @@ def main():
 
     st.divider()
 
-    # ============================================================
-    # חלוקה ללשוניות (Tabs) - כאן מתחיל הקסם הפדגוגי!
-    # ============================================================
     tab1, tab2, tab3 = st.tabs([
         "📊 תמחור תיאורטי (תשואה ← מחיר)", 
         "🏢 חדר עסקאות (מחיר ← YTM)", 
         "🧮 לוח סילוקין מפורט"
     ])
 
-    # ------------------------------------------------------------
-    # טאב 1: התיאוריה הבסיסית
-    # ------------------------------------------------------------
     with tab1:
         st.subheader("🧠 הרעיון הכלכלי: איך תשואת השוק משפיעה על המחיר")
         st.markdown(
@@ -1011,9 +990,6 @@ def main():
             unsafe_allow_html=True
         )
 
-    # ------------------------------------------------------------
-    # טאב 2: חדר עסקאות (פרקטיקה)
-    # ------------------------------------------------------------
     with tab2:
         st.subheader("🏢 מציאות שוק ההון: המחיר קובע את התשואה (YTM)")
         st.markdown(
@@ -1051,9 +1027,6 @@ def main():
                 unsafe_allow_html=True
             )
 
-    # ------------------------------------------------------------
-    # טאב 3: לוח סילוקין מפורט
-    # ------------------------------------------------------------
     with tab3:
         st.subheader("⏱️ ציר זמן: מרכיבי התזרים לאורך חיי האיגרת")
         show_remaining_principal_tab3 = st.checkbox("הצג גם יתרת קרן (קו מקווקו)", value=False)
@@ -1074,9 +1047,6 @@ def main():
 
     st.divider()
 
-    # ============================================================
-    # נקודות לימוד קבועות בתחתית הדף
-    # ============================================================
     st.subheader("📚 מסקנות לימודיות (Takeaways)")
     st.markdown(
         """
@@ -1090,6 +1060,56 @@ def main():
         """,
         unsafe_allow_html=True
     )
+
+# ============================================================
+# מנגנון ההתחברות (Login)
+# ============================================================
+def main():
+    # 1. הכנת סיסמאות מוצפנות (לסביבת ייצור כדאי לשמור את הגיבוב עצמו בקובץ הגדרות נפרד)
+    passwords_to_hash = ['123456', 'pass123']
+    hashed_passwords = stauth.Hasher(passwords_to_hash).generate()
+
+    # 2. הגדרת מאגר המשתמשים
+    credentials = {
+        "usernames": {
+            "student1": {
+                "email": "student1@example.com",
+                "name": "תלמיד 1",
+                "password": hashed_passwords[0]
+            },
+            "student2": {
+                "email": "student2@example.com",
+                "name": "תלמיד 2",
+                "password": hashed_passwords[1]
+            }
+        }
+    }
+
+    # 3. יצירת רכיב האימות
+    authenticator = stauth.Authenticate(
+        credentials=credentials,
+        cookie_name='bond_lab_cookie',
+        key='secret_signature_key',
+        cookie_expiry_days=30
+    )
+
+    # 4. הפעלת מנגנון הלוגין הויזואלי
+    authenticator.login()
+
+    # 5. ניתוב לפי מצב ההתחברות
+    if st.session_state["authentication_status"]:
+        # אם ההתחברות הצליחה -> מציגים כפתור התנתקות ואת המעבדה
+        authenticator.logout('התנתק', 'sidebar')
+        st.sidebar.markdown(f"**שלום {st.session_state['name']} 👋**")
+        run_bond_lab()
+        
+    elif st.session_state["authentication_status"] is False:
+        # אם הזינו פרטים שגויים
+        st.error('שם משתמש או סיסמה שגויים. נסה שוב.')
+        
+    elif st.session_state["authentication_status"] is None:
+        # מסך פתיחה (טרם הוזנו פרטים)
+        st.info('נא להזין שם משתמש וסיסמה כדי לגשת למעבדת האג"ח.')
 
 if __name__ == "__main__":
     main()
