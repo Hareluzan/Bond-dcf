@@ -266,7 +266,7 @@ def validate_inputs(face_value, coupon_rate_pct, market_yield_pct, years_to_matu
     return errors, periods
 
 
-def generate_bond_cashflows(face_value: float, coupon_rate_pct: float, market_yield_pct: float, years_to_maturity: float, payments_per_year: int, amortization_mode: str):
+def generate_bond_cashflows(face_value: float, coupon_rate_pct: float, market_yield_pct: float, years_to_maturity: float, payments_per_year: int, amortization_mode: str, is_cpi_linked: bool = False, expected_inflation_pct: float = 0.0):
     errors, periods = validate_inputs(
         face_value=face_value,
         coupon_rate_pct=coupon_rate_pct,
@@ -280,58 +280,68 @@ def generate_bond_cashflows(face_value: float, coupon_rate_pct: float, market_yi
 
     coupon_rate_annual = coupon_rate_pct / 100.0
     yield_annual = market_yield_pct / 100.0
+    inflation_annual = expected_inflation_pct / 100.0 if is_cpi_linked else 0.0
 
     coupon_per_period = coupon_rate_annual / payments_per_year
     discount_per_period = yield_annual / payments_per_year
 
-    remaining_principal = face_value
-    equal_principal_payment = face_value / periods if amortization_mode == "equal_principal" else 0.0
+    remaining_principal_base = face_value
+    equal_principal_payment_base = face_value / periods if amortization_mode == "equal_principal" else 0.0
 
     rows = []
     total_pv = 0.0
     macaulay_numerator = 0.0
     convexity_numerator = 0.0
-    total_interest = 0.0
-    total_principal_paid = 0.0
+    total_interest_nominal = 0.0
+    total_principal_paid_nominal = 0.0
 
     for t in range(1, periods + 1):
         time_years = t / payments_per_year
-        interest_payment = remaining_principal * coupon_per_period
+        
+        # חישוב התזרימים הבסיסיים (ללא הצמדה)
+        base_interest = remaining_principal_base * coupon_per_period
 
         if amortization_mode == "bullet":
-            principal_payment = face_value if t == periods else 0.0
+            base_principal = face_value if t == periods else 0.0
         elif amortization_mode == "equal_principal":
-            principal_payment = min(equal_principal_payment, remaining_principal)
+            base_principal = min(equal_principal_payment_base, remaining_principal_base)
         else:
             raise ValueError("סוג סילוקין לא נתמך.")
 
+        # החלת הצמדה למדד (ניפוח התזרימים)
+        index_ratio = (1 + inflation_annual) ** time_years if is_cpi_linked else 1.0
+        
+        interest_payment = base_interest * index_ratio
+        principal_payment = base_principal * index_ratio
         total_cashflow = interest_payment + principal_payment
+
+        # היוון התזרים המנופח לפי תשואת שוק נומינלית
         discount_factor = 1 / ((1 + discount_per_period) ** t)
         pv_cashflow = total_cashflow * discount_factor
 
         total_pv += pv_cashflow
         macaulay_numerator += pv_cashflow * time_years
-        
         convexity_numerator += pv_cashflow * (time_years ** 2 + time_years / payments_per_year)
         
-        total_interest += interest_payment
-        total_principal_paid += principal_payment
+        total_interest_nominal += interest_payment
+        total_principal_paid_nominal += principal_payment
 
-        remaining_after = max(remaining_principal - principal_payment, 0.0)
+        # עדכון יתרות הקרן
+        remaining_principal_base -= base_principal
+        remaining_after_inflated = max(remaining_principal_base * index_ratio, 0.0)
 
         rows.append({
             "תקופה": t,
             "שנים מהיום": time_years,
-            "יתרת קרן בתחילת תקופה": remaining_principal,
+            "מדד חזוי (יחס)": index_ratio,
+            "יתרת קרן (בסיס)": remaining_principal_base + base_principal,
             "תשלום ריבית": interest_payment,
             "תשלום קרן": principal_payment,
-            "תזרים נומינלי": total_cashflow,
+            "תזרים נומינלי חזוי": total_cashflow,
             "מקדם היוון": discount_factor,
             "ערך נוכחי (PV)": pv_cashflow,
-            "יתרת קרן לאחר תשלום": remaining_after,
+            "יתרת קרן לאחר תשלום": remaining_after_inflated,
         })
-
-        remaining_principal = remaining_after
 
     df = pd.DataFrame(rows)
 
@@ -345,13 +355,13 @@ def generate_bond_cashflows(face_value: float, coupon_rate_pct: float, market_yi
         "macaulay_duration": macaulay_duration,
         "modified_duration": modified_duration,
         "convexity": convexity,
-        "total_interest": total_interest,
-        "total_principal_paid": total_principal_paid,
+        "total_interest": total_interest_nominal,
+        "total_principal_paid": total_principal_paid_nominal,
         "periods": periods,
     }
 
 
-def price_bond_for_yield(face_value: float, coupon_rate_pct: float, market_yield_pct: float, years_to_maturity: float, payments_per_year: int, amortization_mode: str) -> float:
+def price_bond_for_yield(face_value: float, coupon_rate_pct: float, market_yield_pct: float, years_to_maturity: float, payments_per_year: int, amortization_mode: str, is_cpi_linked: bool, expected_inflation_pct: float) -> float:
     result = generate_bond_cashflows(
         face_value=face_value,
         coupon_rate_pct=coupon_rate_pct,
@@ -359,13 +369,15 @@ def price_bond_for_yield(face_value: float, coupon_rate_pct: float, market_yield
         years_to_maturity=years_to_maturity,
         payments_per_year=payments_per_year,
         amortization_mode=amortization_mode,
+        is_cpi_linked=is_cpi_linked,
+        expected_inflation_pct=expected_inflation_pct
     )
     return result["fair_value"]
 
 
-def calculate_ytm_from_price(face_value, coupon_rate_pct, market_price, years_to_maturity, payments_per_year, amortization_mode):
+def calculate_ytm_from_price(face_value, coupon_rate_pct, market_price, years_to_maturity, payments_per_year, amortization_mode, is_cpi_linked, expected_inflation_pct):
     def yield_diff(y):
-        implied_price = price_bond_for_yield(face_value, coupon_rate_pct, y * 100, years_to_maturity, payments_per_year, amortization_mode)
+        implied_price = price_bond_for_yield(face_value, coupon_rate_pct, y * 100, years_to_maturity, payments_per_year, amortization_mode, is_cpi_linked, expected_inflation_pct)
         return implied_price - market_price
 
     try:
@@ -389,7 +401,7 @@ def get_bond_position_vs_par(face_value, fair_value, coupon_rate_pct, market_yie
         color = THEME["red"]
 
     if abs(coupon_rate_pct - market_yield_pct) < 0.05:
-        intuition = "קופון דומה לתשואת השוק ולכן המחיר קרוב לפארי."
+        intuition = "קופון דומה לתשואת השוק ולכן המחיר קרוב לפארי (או לפארי המותאם למדד)."
     elif coupon_rate_pct > market_yield_pct:
         intuition = "הקופון גבוה מתשואת השוק ולכן המחיר נוטה להיות מעל הפארי."
     else:
@@ -420,10 +432,10 @@ def format_df_for_display(df: pd.DataFrame) -> pd.DataFrame:
     display_df = df.copy()
     numeric_cols_2 = [
         "שנים מהיום",
-        "יתרת קרן בתחילת תקופה",
+        "יתרת קרן (בסיס)",
         "תשלום ריבית",
         "תשלום קרן",
-        "תזרים נומינלי",
+        "תזרים נומינלי חזוי",
         "ערך נוכחי (PV)",
         "יתרת קרן לאחר תשלום",
     ]
@@ -431,12 +443,13 @@ def format_df_for_display(df: pd.DataFrame) -> pd.DataFrame:
         display_df[col] = display_df[col].map(lambda x: f"{x:,.2f}")
 
     display_df["מקדם היוון"] = display_df["מקדם היוון"].map(lambda x: f"{x:.6f}")
+    display_df["מדד חזוי (יחס)"] = display_df["מדד חזוי (יחס)"].map(lambda x: f"{x:.4f}")
     display_df["תקופה"] = display_df["תקופה"].astype(int)
     return display_df
 
 
 @st.cache_data
-def build_sensitivity_table(face_value: float, coupon_rate_pct: float, years_to_maturity: float, payments_per_year: int, amortization_mode: str, base_yield_pct: float) -> pd.DataFrame:
+def build_sensitivity_table(face_value: float, coupon_rate_pct: float, years_to_maturity: float, payments_per_year: int, amortization_mode: str, base_yield_pct: float, is_cpi_linked: bool, expected_inflation_pct: float) -> pd.DataFrame:
     sensitivity_yields = sorted(set([
         max(0.0, base_yield_pct - 2.0),
         max(0.0, base_yield_pct - 1.0),
@@ -448,24 +461,22 @@ def build_sensitivity_table(face_value: float, coupon_rate_pct: float, years_to_
     rows = []
     for y in sensitivity_yields:
         price = price_bond_for_yield(
-            face_value=face_value,
-            coupon_rate_pct=coupon_rate_pct,
-            market_yield_pct=y,
-            years_to_maturity=years_to_maturity,
-            payments_per_year=payments_per_year,
-            amortization_mode=amortization_mode,
+            face_value=face_value, coupon_rate_pct=coupon_rate_pct,
+            market_yield_pct=y, years_to_maturity=years_to_maturity,
+            payments_per_year=payments_per_year, amortization_mode=amortization_mode,
+            is_cpi_linked=is_cpi_linked, expected_inflation_pct=expected_inflation_pct
         )
         rows.append({
-            "תשואת שוק (%)": y,
+            "תשואת שוק נומינלית (%)": y,
             "מחיר תיאורטי": price,
-            "פער מפארי (%)": ((price / face_value) - 1) * 100 if face_value != 0 else 0.0,
+            "פער מערך נקוב (%)": ((price / face_value) - 1) * 100 if face_value != 0 else 0.0,
         })
 
     return pd.DataFrame(rows)
 
 
 @st.cache_data
-def build_reverse_sensitivity_table(face_value: float, coupon_rate_pct: float, years_to_maturity: float, payments_per_year: int, amortization_mode: str, base_price: float) -> pd.DataFrame:
+def build_reverse_sensitivity_table(face_value: float, coupon_rate_pct: float, years_to_maturity: float, payments_per_year: int, amortization_mode: str, base_price: float, is_cpi_linked: bool, expected_inflation_pct: float) -> pd.DataFrame:
     sensitivity_prices = sorted(set([
         max(0.01, base_price - 2.0),
         max(0.01, base_price - 1.0),
@@ -477,24 +488,22 @@ def build_reverse_sensitivity_table(face_value: float, coupon_rate_pct: float, y
     rows = []
     for p in sensitivity_prices:
         ytm = calculate_ytm_from_price(
-            face_value=face_value,
-            coupon_rate_pct=coupon_rate_pct,
-            market_price=p,
-            years_to_maturity=years_to_maturity,
-            payments_per_year=payments_per_year,
-            amortization_mode=amortization_mode
+            face_value=face_value, coupon_rate_pct=coupon_rate_pct,
+            market_price=p, years_to_maturity=years_to_maturity,
+            payments_per_year=payments_per_year, amortization_mode=amortization_mode,
+            is_cpi_linked=is_cpi_linked, expected_inflation_pct=expected_inflation_pct
         )
         if ytm is not None:
             rows.append({
                 "מחיר שוק": p,
                 "YTM נגזר (%)": ytm,
-                "פער מפארי (%)": ((p / face_value) - 1) * 100 if face_value != 0 else 0.0,
+                "פער מערך נקוב (%)": ((p / face_value) - 1) * 100 if face_value != 0 else 0.0,
             })
     return pd.DataFrame(rows)
 
 
 @st.cache_data
-def build_price_yield_curve(face_value: float, coupon_rate_pct: float, years_to_maturity: float, payments_per_year: int, amortization_mode: str, base_yield_pct: float) -> pd.DataFrame:
+def build_price_yield_curve(face_value: float, coupon_rate_pct: float, years_to_maturity: float, payments_per_year: int, amortization_mode: str, base_yield_pct: float, is_cpi_linked: bool, expected_inflation_pct: float) -> pd.DataFrame:
     y_min = max(0.0, base_yield_pct - 5.0)
     y_max = base_yield_pct + 5.0
     y_values = np.arange(y_min, y_max + 0.0001, 0.25)
@@ -502,12 +511,10 @@ def build_price_yield_curve(face_value: float, coupon_rate_pct: float, years_to_
     prices = []
     for y in y_values:
         p = price_bond_for_yield(
-            face_value=face_value,
-            coupon_rate_pct=coupon_rate_pct,
-            market_yield_pct=float(y),
-            years_to_maturity=years_to_maturity,
-            payments_per_year=payments_per_year,
-            amortization_mode=amortization_mode,
+            face_value=face_value, coupon_rate_pct=coupon_rate_pct,
+            market_yield_pct=float(y), years_to_maturity=years_to_maturity,
+            payments_per_year=payments_per_year, amortization_mode=amortization_mode,
+            is_cpi_linked=is_cpi_linked, expected_inflation_pct=expected_inflation_pct
         )
         prices.append(p)
 
@@ -527,14 +534,14 @@ def plot_cashflow_components(df: pd.DataFrame, show_remaining_principal: bool):
     fig.add_trace(go.Bar(
         x=df["שנים מהיום"],
         y=df["תשלום ריבית"],
-        name='תשלום ריבית',
+        name='תשלום ריבית (כולל הצמדה)',
         marker_color=THEME["blue"]
     ))
 
     fig.add_trace(go.Bar(
         x=df["שנים מהיום"],
         y=df["תשלום קרן"],
-        name='תשלום קרן',
+        name='תשלום קרן (כולל הצמדה)',
         marker_color=THEME["gold"]
     ))
 
@@ -548,7 +555,7 @@ def plot_cashflow_components(df: pd.DataFrame, show_remaining_principal: bool):
             gridcolor=THEME["light_line"]
         ),
         yaxis=dict(
-            title='סכום תשלום תקופתי',
+            title='סכום תשלום תקופתי חזוי',
             gridcolor=THEME["light_line"]
         ),
         legend=dict(
@@ -566,7 +573,7 @@ def plot_cashflow_components(df: pd.DataFrame, show_remaining_principal: bool):
         fig.add_trace(go.Scatter(
             x=df["שנים מהיום"],
             y=df["יתרת קרן לאחר תשלום"],
-            name='יתרת קרן לאחר תשלום',
+            name='יתרת קרן (חזויה)',
             mode='lines+markers',
             line=dict(color=THEME["cream"], width=2, dash='dot'),
             yaxis='y2'
@@ -589,8 +596,8 @@ def plot_discounted_vs_nominal(df: pd.DataFrame):
 
     fig.add_trace(go.Bar(
         x=df["שנים מהיום"],
-        y=df["תזרים נומינלי"],
-        name='תזרים נומינלי',
+        y=df["תזרים נומינלי חזוי"],
+        name='תזרים נומינלי חזוי',
         marker_color='rgba(255,255,255,0.18)',
         marker_line_color='rgba(255,255,255,0.40)',
         marker_line_width=1
@@ -649,7 +656,7 @@ def plot_price_yield_curve(curve_df: pd.DataFrame, current_yield: float, current
         y=face_value,
         line_dash="dot",
         line_color=THEME["muted"],
-        annotation_text="פארי",
+        annotation_text="פארי בסיסי",
         annotation_position="top right",
         annotation_font_color=THEME["muted"],
     )
@@ -693,7 +700,7 @@ def run_bond_lab():
         unsafe_allow_html=True
     )
     st.markdown(
-        f"<p style='text-align:center !important; color:{THEME['muted']} !important;'>כלי לימודי שממחיש כיצד אג\"ח מתנהגת, כיצד מחשבים מחיר תיאורטי, ואיך היוון תזרימים עובד בפועל</p>",
+        f"<p style='text-align:center !important; color:{THEME['muted']} !important;'>כלי לימודי שממחיש כיצד אג\"ח (נומינלית וצמודה) מתנהגת, כיצד מחשבים מחיר תיאורטי, ואיך היוון תזרימים עובד בפועל</p>",
         unsafe_allow_html=True
     )
 
@@ -703,12 +710,22 @@ def run_bond_lab():
 
     with col_in1:
         st.subheader("⚙️ מאפייני האיגרת")
+        
+        # בחירת סוג הצמדה
+        linkage_type = st.radio(
+            "סוג הצמדה",
+            options=["nominal", "cpi_linked"],
+            format_func=lambda x: "שקלי (לא צמוד)" if x == "nominal" else "צמוד מדד",
+            horizontal=True
+        )
+        is_cpi_linked = (linkage_type == "cpi_linked")
+
         face_value = st.number_input(
-            "ערך נקוב (Face Value)",
+            "ערך נקוב בסיס (Face Value)",
             min_value=1.0,
             value=100.0,
             step=10.0,
-            help='הסכום שהמנפיק מתחייב להחזיר לבעל האג"ח.'
+            help='הסכום שהמנפיק מתחייב להחזיר (לפני הצמדה).'
         )
         coupon_rate = st.number_input(
             "שער קופון שנתי (%)",
@@ -741,15 +758,28 @@ def run_bond_lab():
             help="Bullet: הקרן מוחזרת בסוף. קרן שווה: החזר קרן אחיד לאורך חיי האיגרת."
         )
 
+        if is_cpi_linked:
+            st.markdown("---")
+            expected_inflation = st.number_input(
+                "ציפיות אינפלציה שנתיות (%)",
+                min_value=-5.0,
+                max_value=20.0,
+                value=2.5,
+                step=0.1,
+                help="הקצב השנתי שבו אנו מניחים שהמדד יעלה לאורך חיי האיגרת."
+            )
+        else:
+            expected_inflation = 0.0
+
     with col_in3:
         st.subheader("📈 נתוני שוק")
         market_yield = st.number_input(
-            "תשואת שוק נדרשת / שיעור היוון (%)",
+            "תשואת שוק נדרשת / שיעור היוון נומינלי (%)",
             min_value=0.0,
             value=6.0,
             step=0.1,
             format="%.2f",
-            help='זהו שיעור ההיוון שלפיו השוק מתמחר היום תזרימים מאג"ח דומה בסיכון ובמח"מ.'
+            help='זהו שיעור ההיוון הנומינלי. באג"ח צמוד, נהוון לפיו את התזרימים לאחר שניפחנו אותם במדד (גישת התזרים החזוי).'
         )
 
         market_price_text = st.text_input(
@@ -768,7 +798,7 @@ def run_bond_lab():
             if market_price < 0:
                 st.error("מחיר שוק לא יכול להיות שלילי.")
                 st.stop()
-            implied_ytm = calculate_ytm_from_price(face_value, coupon_rate, market_price, years_to_maturity, payment_freq, amortization_mode)
+            implied_ytm = calculate_ytm_from_price(face_value, coupon_rate, market_price, years_to_maturity, payment_freq, amortization_mode, is_cpi_linked, expected_inflation)
         except ValueError:
             st.error("מחיר השוק שהוזן אינו מספר תקין.")
             st.stop()
@@ -781,6 +811,8 @@ def run_bond_lab():
             years_to_maturity=years_to_maturity,
             payments_per_year=payment_freq,
             amortization_mode=amortization_mode,
+            is_cpi_linked=is_cpi_linked,
+            expected_inflation_pct=expected_inflation
         )
     except ValueError as e:
         st.error(str(e))
@@ -792,7 +824,7 @@ def run_bond_lab():
     modified_duration = result["modified_duration"]
     convexity = result["convexity"]
     total_interest = result["total_interest"]
-    total_nominal_cashflows = df_cashflows["תזרים נומינלי"].sum()
+    total_nominal_cashflows = df_cashflows["תזרים נומינלי חזוי"].sum()
 
     market_status_text, market_status_color, market_diff_pct = get_market_pricing_status(
         fair_value=fair_value,
@@ -811,6 +843,16 @@ def run_bond_lab():
 
     st.divider()
 
+    if is_cpi_linked:
+        st.markdown(
+            """
+            <div class='note-box' style='border-color: var(--blue);'>
+            ℹ️ <b>מודל תמחור אג"ח צמוד:</b> בחרת להשתמש במודל <b>התזרים החזוי</b>. המערכת מחשבת את הקרן והריבית ו"מנפחת" אותן לאורך זמן בהתאם לציפיות האינפלציה (ריבית דריבית). 
+            לאחר מכן, התזרימים המנופחים (הנומינליים) מהוונים חזרה להיום לפי תשואת השוק הנומינלית.
+            </div>
+            """, unsafe_allow_html=True
+        )
+
     c1, c2, c3, c4 = st.columns(4)
 
     with c1:
@@ -819,14 +861,14 @@ def run_bond_lab():
             <div class='fair-value-box'>
                 <div class='metric-title'>השווי התיאורטי המחושב</div>
                 <div class='metric-value'>{fair_value:,.2f}</div>
-                <div class='metric-sub'>מחיר לפי היוון תזרימים</div>
+                <div class='metric-sub'>מחיר לפי היוון תזרימים חזויים</div>
             </div>
             """,
             unsafe_allow_html=True
         )
 
     with c2:
-        ytm_display = f"YTM גלום: {implied_ytm:.2f}%" if implied_ytm is not None else "לא חושב YTM"
+        ytm_display = f"YTM נומינלי גלום: {implied_ytm:.2f}%" if implied_ytm is not None else "לא חושב YTM"
         st.markdown(
             f"""
             <div class='metric-box'>
@@ -868,9 +910,9 @@ def run_bond_lab():
         st.markdown(
             f"""
             <div class='metric-box'>
-                <div class='metric-title'>מול פארי</div>
+                <div class='metric-title'>מול פארי בסיסי</div>
                 <div class='metric-value' style='color:{par_color} !important; font-size:1.4rem;'>{par_label}</div>
-                <div class='metric-sub'>פער מפארי: {par_diff_pct:.2f}%</div>
+                <div class='metric-sub'>פער מהבסיס: {par_diff_pct:.2f}%</div>
             </div>
             """,
             unsafe_allow_html=True
@@ -880,9 +922,9 @@ def run_bond_lab():
         st.markdown(
             f"""
             <div class='metric-box'>
-                <div class='metric-title'>סך תזרים נומינלי</div>
+                <div class='metric-title'>סך תזרים חזוי מצטבר</div>
                 <div class='metric-value'>{total_nominal_cashflows:,.2f}</div>
-                <div class='metric-sub'>קרן + ריבית ללא היוון</div>
+                <div class='metric-sub'>קרן + ריבית (כולל מדד) ללא היוון</div>
             </div>
             """,
             unsafe_allow_html=True
@@ -892,9 +934,9 @@ def run_bond_lab():
         st.markdown(
             f"""
             <div class='metric-box'>
-                <div class='metric-title'>סך תשלומי ריבית</div>
+                <div class='metric-title'>סך תשלומי ריבית חזויים</div>
                 <div class='metric-value'>{total_interest:,.2f}</div>
-                <div class='metric-sub'>ריבית חוזית מצטברת</div>
+                <div class='metric-sub'>ריבית מצטברת עד לפדיון</div>
             </div>
             """,
             unsafe_allow_html=True
@@ -945,14 +987,14 @@ def run_bond_lab():
         col_t1_1, col_t1_2 = st.columns(2)
         
         with col_t1_1:
-            st.subheader("📉 תזרים נומינלי מול ערך נוכחי")
+            st.subheader("📉 תזרים נומינלי/חזוי מול ערך נוכחי")
             fig_pv = plot_discounted_vs_nominal(df_cashflows)
             st.plotly_chart(fig_pv, use_container_width=True, config={'displayModeBar': False})
             
             if total_nominal_cashflows > 0:
                 discount_pct = (1 - fair_value / total_nominal_cashflows) * 100
                 st.markdown(
-                    f"<div class='discount-summary'>סך ההיוון: <b>{discount_pct:.1f}%</b> מהתזרים הנומינלי נשחק עקב עיתוי הכסף בזמן</div>",
+                    f"<div class='discount-summary'>סך ההיוון: <b>{discount_pct:.1f}%</b> מהתזרים העתידי החזוי נשחק עקב עיתוי הכסף בזמן</div>",
                     unsafe_allow_html=True
                 )
 
@@ -961,7 +1003,8 @@ def run_bond_lab():
             curve_df = build_price_yield_curve(
                 face_value=face_value, coupon_rate_pct=coupon_rate,
                 years_to_maturity=years_to_maturity, payments_per_year=payment_freq,
-                amortization_mode=amortization_mode, base_yield_pct=market_yield
+                amortization_mode=amortization_mode, base_yield_pct=market_yield,
+                is_cpi_linked=is_cpi_linked, expected_inflation_pct=expected_inflation
             )
             fig_curve = plot_price_yield_curve(
                 curve_df=curve_df, current_yield=market_yield,
@@ -975,13 +1018,14 @@ def run_bond_lab():
         sensitivity_df = build_sensitivity_table(
             face_value=face_value, coupon_rate_pct=coupon_rate,
             years_to_maturity=years_to_maturity, payments_per_year=payment_freq,
-            amortization_mode=amortization_mode, base_yield_pct=market_yield
+            amortization_mode=amortization_mode, base_yield_pct=market_yield,
+            is_cpi_linked=is_cpi_linked, expected_inflation_pct=expected_inflation
         ).copy()
 
         sensitivity_display = sensitivity_df.copy()
-        sensitivity_display["תשואת שוק (%)"] = sensitivity_display["תשואת שוק (%)"].map(lambda x: f"{x:.2f}%")
+        sensitivity_display["תשואת שוק נומינלית (%)"] = sensitivity_display["תשואת שוק נומינלית (%)"].map(lambda x: f"{x:.2f}%")
         sensitivity_display["מחיר תיאורטי"] = sensitivity_display["מחיר תיאורטי"].map(lambda x: f"{x:,.2f}")
-        sensitivity_display["פער מפארי (%)"] = sensitivity_display["פער מפארי (%)"].map(lambda x: f"{x:.2f}%")
+        sensitivity_display["פער מערך נקוב (%)"] = sensitivity_display["פער מערך נקוב (%)"].map(lambda x: f"{x:.2f}%")
 
         st.markdown(
             "<div class='table-container'>" +
@@ -1003,7 +1047,7 @@ def run_bond_lab():
         
         st.subheader("🔄 טבלת רגישות הפוכה: מהו ה-YTM הנגזר ממחירי שוק שונים?")
         st.markdown(
-            "הטבלה הבאה לוקחת את מחיר השוק שהזנת למעלה (או את השווי התיאורטי, אם לא הזנת), ומדגימה מה יקרה לתשואה לפדיון אם מחיר האיגרת במסך המסחר יעלה או יירד."
+            "הטבלה הבאה לוקחת את מחיר השוק שהזנת למעלה (או את השווי התיאורטי, אם לא הזנת), ומדגימה מה יקרה לתשואה לפדיון (הנומינלית) אם מחיר האיגרת במסך המסחר יעלה או יירד."
         )
 
         base_price_for_reverse = market_price if market_price is not None else fair_value
@@ -1011,14 +1055,15 @@ def run_bond_lab():
         reverse_sens_df = build_reverse_sensitivity_table(
             face_value=face_value, coupon_rate_pct=coupon_rate,
             years_to_maturity=years_to_maturity, payments_per_year=payment_freq,
-            amortization_mode=amortization_mode, base_price=base_price_for_reverse
+            amortization_mode=amortization_mode, base_price=base_price_for_reverse,
+            is_cpi_linked=is_cpi_linked, expected_inflation_pct=expected_inflation
         ).copy()
         
         if not reverse_sens_df.empty:
             reverse_display = reverse_sens_df.copy()
             reverse_display["מחיר שוק"] = reverse_display["מחיר שוק"].map(lambda x: f"{x:,.2f}")
             reverse_display["YTM נגזר (%)"] = reverse_display["YTM נגזר (%)"].map(lambda x: f"{x:.2f}%")
-            reverse_display["פער מפארי (%)"] = reverse_display["פער מפארי (%)"].map(lambda x: f"{x:.2f}%")
+            reverse_display["פער מערך נקוב (%)"] = reverse_display["פער מערך נקוב (%)"].map(lambda x: f"{x:.2f}%")
 
             st.markdown(
                 "<div class='table-container'>" +
@@ -1029,13 +1074,13 @@ def run_bond_lab():
 
     with tab3:
         st.subheader("⏱️ ציר זמן: מרכיבי התזרים לאורך חיי האיגרת")
-        show_remaining_principal_tab3 = st.checkbox("הצג גם יתרת קרן (קו מקווקו)", value=False)
+        show_remaining_principal_tab3 = st.checkbox("הצג גם יתרת קרן חזויה (קו מקווקו)", value=False)
         fig_cashflows = plot_cashflow_components(df_cashflows, show_remaining_principal=show_remaining_principal_tab3)
         st.plotly_chart(fig_cashflows, use_container_width=True, config={'displayModeBar': False})
 
         st.subheader("🧮 טבלת סילוקין מפורטת")
         st.markdown(
-            "פירוט של כל תקופת תשלום: כמה ממנה הוא החזר ריבית, כמה החזר קרן, מקדם ההיוון לאותה תקופה, והערך הנוכחי של התזרים הבדיד."
+            "פירוט של כל תקופת תשלום (כולל מקדם ההצמדה במידה וישנו): כמה מהתשלום הוא החזר ריבית, כמה החזר קרן, מקדם ההיוון לאותה תקופה, והערך הנוכחי של התזרים הבדיד."
         )
         display_df = format_df_for_display(df_cashflows)
         st.markdown(
@@ -1052,8 +1097,8 @@ def run_bond_lab():
         """
         <div class='note-box'>
         1. <b>הקשר ההפוך (מחיר ↔ תשואה):</b> עליית תשואה בשוק מובילה לירידה במחיר האג"ח. הקשר הזה אינו לינארי, אלא קמור (אפקט הקמירות/Convexity מספק רווחיות א-סימטרית לטובת המשקיע).<br><br>
-        2. <b>YTM:</b> בפרקטיקה, השוק קובע את המחיר בהתאם לסיכון ופרמיות נדרשות, והמשקיעים גוזרים מהמחיר את התשואה לפדיון.<br><br>
-        3. <b>אפקט הקופון:</b> קופון שגבוה מתשואת השוק ← מחיר האג"ח נוטה להיסחר בפרמיה מעל הפארי. קופון נמוך מהתשואה ← מחיר דיסקאונט.<br><br>
+        2. <b>אג"ח צמוד מדד:</b> כאשר אג"ח צמודה למדד המחירים לצרכן, גם הקרן וגם תשלומי הריבית מתעדכנים כלפי מעלה בהתאם לאינפלציה, מה שמגן על כוח הקנייה הריאלי של המשקיע.<br><br>
+        3. <b>YTM:</b> בפרקטיקה, השוק קובע את המחיר בהתאם לסיכון ופרמיות נדרשות, והמשקיעים גוזרים מהמחיר את התשואה לפדיון.<br><br>
         4. <b>סיכון ריבית (מח"מ):</b> מח"מ מקולי מתאר את הזמן הממוצע המשוקלל לקבלת הכסף, והמח"מ המותאם (Modified Duration) מתרגם את זה לקירוב הרגישות של מחיר האג"ח לכל תזוזה של 1% בריבית.<br><br>
         5. <b>לוחות סילוקין:</b> באג"ח פדיון לשיעורין, הקרן מוחזרת בהדרגה לאורך חיי האיגרת, ולכן רוב התזרימים מתקבלים מוקדם יותר, מה שמקצר משמעותית את המח"מ בהשוואה לאג"ח Bullet.
         </div>
