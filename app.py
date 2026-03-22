@@ -1047,7 +1047,7 @@ def run_bond_lab():
 
     st.divider()
 
-    st.subheader("📚 מסקנות לימודיות (Takeaways)")
+    st.subheader(" מסקנות לימודיות (Takeaways)")
     st.markdown(
         """
         <div class='note-box'>
@@ -1073,7 +1073,7 @@ def main():
         "usernames": {
             "student1": {
                 "email": "student1@example.com",
-                "name": "תלמיד 1",
+                "name": "תלמיד",
                 "password": hashed_passwords[0]
             },
             "student2": {
