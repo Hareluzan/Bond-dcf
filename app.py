@@ -1101,8 +1101,18 @@ def main():
             authenticator.login()
 
     if st.session_state.get("authentication_status"):
-        authenticator.logout('התנתק', 'sidebar')
-        st.sidebar.markdown(f"**שלום {st.session_state.get('name', 'תלמיד')} 👋**")
+        # הצגת כפתור התנתקות וברכה בשורה אחת בראש המסך הראשי
+        col_logout, col_greet = st.columns([1, 8])
+        
+        with col_logout:
+            authenticator.logout('התנתק', 'main')
+            
+        with col_greet:
+            st.markdown(
+                f"<div style='padding-top: 8px; font-size: 1.1rem;'>שלום <b>{st.session_state.get('name', 'תלמיד')}</b> 👋</div>", 
+                unsafe_allow_html=True
+            )
+            
         run_bond_lab()
         
     elif st.session_state.get("authentication_status") is False:
