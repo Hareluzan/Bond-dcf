@@ -4,6 +4,7 @@ import plotly.graph_objects as go
 import numpy as np
 import scipy.optimize as optimize
 import streamlit_authenticator as stauth
+import bcrypt
 
 # ============================================================
 # הגדרות כלליות
@@ -311,7 +312,6 @@ def generate_bond_cashflows(face_value: float, coupon_rate_pct: float, market_yi
         total_pv += pv_cashflow
         macaulay_numerator += pv_cashflow * time_years
         
-        # חישוב מונה הקמירות (Convexity) - בשנים
         convexity_numerator += pv_cashflow * (time_years ** 2 + time_years / payments_per_year)
         
         total_interest += interest_payment
@@ -1062,14 +1062,13 @@ def run_bond_lab():
     )
 
 # ============================================================
-# מנגנון ההתחברות (Login)
+# מנגנון ההתחברות (Login) עוקף בעיות גרסה
 # ============================================================
 def main():
-    # 1. הכנת סיסמאות מוצפנות (לסביבת ייצור כדאי לשמור את הגיבוב עצמו בקובץ הגדרות נפרד)
+    # יצירת מנגנון גיבוב פנימי ואמין באמצעות ספריית bcrypt
     passwords_to_hash = ['123456', 'pass123']
-    hashed_passwords = stauth.Hasher(passwords_to_hash).generate()
+    hashed_passwords = [bcrypt.hashpw(p.encode('utf-8'), bcrypt.gensalt()).decode('utf-8') for p in passwords_to_hash]
 
-    # 2. הגדרת מאגר המשתמשים
     credentials = {
         "usernames": {
             "student1": {
@@ -1085,30 +1084,31 @@ def main():
         }
     }
 
-    # 3. יצירת רכיב האימות
     authenticator = stauth.Authenticate(
-        credentials=credentials,
-        cookie_name='bond_lab_cookie',
-        key='secret_signature_key',
-        cookie_expiry_days=30
+        credentials,
+        'bond_lab_cookie',
+        'secret_signature_key',
+        30
     )
 
-    # 4. הפעלת מנגנון הלוגין הויזואלי
-    authenticator.login()
+    # מנגנון התחברות שמכסה גם את הגרסאות הישנות וגם את החדשות ביותר של הספרייה
+    try:
+        authenticator.login('main')
+    except TypeError:
+        try:
+            authenticator.login('Login', 'main')
+        except Exception:
+            authenticator.login()
 
-    # 5. ניתוב לפי מצב ההתחברות
-    if st.session_state["authentication_status"]:
-        # אם ההתחברות הצליחה -> מציגים כפתור התנתקות ואת המעבדה
+    if st.session_state.get("authentication_status"):
         authenticator.logout('התנתק', 'sidebar')
-        st.sidebar.markdown(f"**שלום {st.session_state['name']} 👋**")
+        st.sidebar.markdown(f"**שלום {st.session_state.get('name', 'תלמיד')} 👋**")
         run_bond_lab()
         
-    elif st.session_state["authentication_status"] is False:
-        # אם הזינו פרטים שגויים
+    elif st.session_state.get("authentication_status") is False:
         st.error('שם משתמש או סיסמה שגויים. נסה שוב.')
         
-    elif st.session_state["authentication_status"] is None:
-        # מסך פתיחה (טרם הוזנו פרטים)
+    elif st.session_state.get("authentication_status") is None:
         st.info('נא להזין שם משתמש וסיסמה כדי לגשת למעבדת האג"ח.')
 
 if __name__ == "__main__":
