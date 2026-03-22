@@ -1047,7 +1047,7 @@ def run_bond_lab():
 
     st.divider()
 
-    st.subheader(" מסקנות לימודיות (Takeaways)")
+    st.subheader("📚 מסקנות לימודיות (Takeaways)")
     st.markdown(
         """
         <div class='note-box'>
@@ -1062,18 +1062,19 @@ def run_bond_lab():
     )
 
 # ============================================================
-# מנגנון ההתחברות (Login) עוקף בעיות גרסה
+# מנגנון ההתחברות (Login) עוקף בעיות גרסה ושומר מטמון
 # ============================================================
-def main():
-    # יצירת מנגנון גיבוב פנימי ואמין באמצעות ספריית bcrypt
+@st.cache_data
+def get_credentials():
+    # פונקציה זו רצה רק פעם אחת ושומרת את ההצפנה הקבועה בזיכרון השרת!
     passwords_to_hash = ['123456', 'pass123']
     hashed_passwords = [bcrypt.hashpw(p.encode('utf-8'), bcrypt.gensalt()).decode('utf-8') for p in passwords_to_hash]
-
-    credentials = {
+    
+    return {
         "usernames": {
             "student1": {
                 "email": "student1@example.com",
-                "name": "תלמיד",
+                "name": "תלמיד 1",
                 "password": hashed_passwords[0]
             },
             "student2": {
@@ -1084,14 +1085,16 @@ def main():
         }
     }
 
+def main():
+    credentials = get_credentials()
+
     authenticator = stauth.Authenticate(
         credentials,
         'bond_lab_cookie',
         'secret_signature_key',
-        30
+        30 # תוקף העוגייה נשאר ל-30 ימים
     )
 
-    # מנגנון התחברות שמכסה גם את הגרסאות הישנות וגם את החדשות ביותר של הספרייה
     try:
         authenticator.login('main')
     except TypeError:
@@ -1101,7 +1104,6 @@ def main():
             authenticator.login()
 
     if st.session_state.get("authentication_status"):
-        # הצגת כפתור התנתקות וברכה בשורה אחת בראש המסך הראשי
         col_logout, col_greet = st.columns([1, 8])
         
         with col_logout:
